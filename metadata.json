@@ -1,0 +1,6 @@
+{
+  "name": "Survivor Rogue: 2D Auto-Shooter",
+  "description": "لعبة بقاء روج-لايت حركية بتصويب تلقائي (Auto-Shooter Survival) مع أسلحة دوارة، مقذوفات سحرية، وموجات أعداء وترقيات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
