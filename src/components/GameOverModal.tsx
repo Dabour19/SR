@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Trophy, Skull, Timer, Swords, Sparkles, RotateCcw } from 'lucide-react';
+import { Trophy, Skull, Timer, Swords, Sparkles, RotateCcw, Map } from 'lucide-react';
 import { GameRunStats } from '../types';
 import { playerAuthService, TierInfo } from '../services/playerAuthService';
 
@@ -8,6 +8,7 @@ interface GameOverModalProps {
   coinsEarned?: number;
   onRestart: () => void;
   onOpenLeaderboard: () => void;
+  onBackToHub: () => void;
 }
 
 export const GameOverModal: React.FC<GameOverModalProps> = ({
@@ -15,6 +16,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   coinsEarned,
   onRestart,
   onOpenLeaderboard,
+  onBackToHub,
 }) => {
   const [bestTime, setBestTime] = useState<number>(0);
   const [bestKills, setBestKills] = useState<number>(0);
@@ -192,6 +194,16 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             <span>عرض التصنيف</span>
           </button>
         </div>
+
+        {/* Back to hub */}
+        <button
+          id="btn-back-to-hub"
+          onClick={onBackToHub}
+          className="mt-3 w-full flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-[#0f172a] hover:bg-[#334155] text-slate-300 font-bold text-sm border border-[#334155] transition cursor-pointer"
+        >
+          <Map className="w-4 h-4 text-cyan-400" />
+          <span>🗺️ الرجوع للساحة</span>
+        </button>
       </div>
     </div>
   );

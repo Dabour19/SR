@@ -6,9 +6,9 @@ import { drawHeroSprite } from '../game/characterSprite';
 import { hubPresence, type HubPlayer } from '../services/hubPresence';
 import { playerAuthService } from '../services/playerAuthService';
 import {
-  WORLD_W, WORLD_H, HORIZON_Y, BUILDINGS, FOUNTAIN, LAMPS, TREES, BENCHES, PLAYER_SPAWN,
+  WORLD_W, WORLD_H, HORIZON_Y, BUILDINGS, FOUNTAIN, LAMPS, TREES, BENCHES, PLAYER_SPAWN, CITY_EDGE,
   type Building, type HubStationId,
-  resolveMove, nearestBuilding, buildingAtPoint, doorStand, nightFactor,
+  resolveMove, nearestBuilding, buildingAtPoint, doorStand, nightFactor, blocked,
   drawSky, drawSkyline, drawGround, drawFountain, drawTree, drawLamp, drawLampGlow, drawBench,
   drawBuilding, drawFireflies, drawBubble, drawNameTag,
 } from '../game/cityScene';
@@ -76,7 +76,28 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  /** Player position is persisted so re-entering the hub restores the spot. */
   const posRef = useRef({ ...PLAYER_SPAWN });
+  // Restore saved hub position once on mount (falls back to default spawn).
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('hub_player_pos') || 'null');
+      if (saved && typeof saved.x === 'number' && typeof saved.y === 'number' && !blocked(saved.x, saved.y)) {
+        posRef.current = { x: saved.x, y: saved.y };
+      }
+    } catch { /* ignore */ }
+    // Save position when leaving the hub (and periodically while inside).
+    const save = () => {
+      try { localStorage.setItem('hub_player_pos', JSON.stringify(posRef.current)); } catch { /* ignore */ }
+    };
+    const iv = window.setInterval(save, 3000);
+    window.addEventListener('pagehide', save);
+    return () => {
+      window.clearInterval(iv);
+      window.removeEventListener('pagehide', save);
+      save();
+    };
+  }, []);
   const facingRef = useRef(false);
   const keys = useRef<Set<string>>(new Set());
   const walkCycle = useRef(0);
@@ -124,12 +145,22 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
     if (b) onStationRef.current(b.id);
   }, []);
 
-  /** Walk to a building and open it on arrival (quick-travel / click). */
+  /** Remaining stops for the current auto-walk (e.g. city-gate waypoint). */
+  const waypointQueue = useRef<Array<{ x: number; y: number; station?: HubStationId }>>([]);
+
+  /** Walk to a building and open it on arrival (quick-travel / click).
+   *  Wilderness buildings (dungeons) are behind the city wall, so route
+   *  through the gate opening first instead of a straight line. */
   const travelTo = useCallback((id: HubStationId) => {
     const b = BUILDINGS.find((x) => x.id === id);
     if (!b) return;
     const d = doorStand(b);
-    target.current = { x: d.x, y: d.y, station: id };
+    waypointQueue.current = [];
+    if (b.x > CITY_EDGE) {
+      waypointQueue.current.push({ x: CITY_EDGE + 70, y: 540 });
+    }
+    waypointQueue.current.push({ x: d.x, y: d.y, station: id });
+    target.current = waypointQueue.current.shift()!;
   }, []);
 
   /* ---------- presence: other connected players ---------- */
@@ -267,24 +298,35 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
       if (k.has('ArrowRight') || k.has('d') || k.has('D') || k.has('ي')) dx += 1;
       if (k.has('ArrowUp') || k.has('w') || k.has('W') || k.has('ص')) dy -= 1;
       if (k.has('ArrowDown') || k.has('s') || k.has('S') || k.has('س')) dy += 1;
-      if (dx || dy) { target.current = null; step(dx, dy, dt); }
+      if (dx || dy) { target.current = null; waypointQueue.current = []; step(dx, dy, dt); }
       else {
         const v = joyVec.current;
-        if (v.dx || v.dy) { target.current = null; step(v.dx, v.dy, dt); }
+        if (v.dx || v.dy) { target.current = null; waypointQueue.current = []; step(v.dx, v.dy, dt); }
         else if (target.current) {
           const p = posRef.current;
           const tg = target.current;
           const tx = tg.x - p.x, ty = tg.y - p.y;
           const dist = Math.hypot(tx, ty);
           if (dist < 4) {
-            target.current = null;
-            if (tg.station) onStationRef.current(tg.station);
+            if (tg.station) {
+              target.current = null;
+              waypointQueue.current = [];
+              onStationRef.current(tg.station);
+            } else {
+              // waypoint reached: head to the next stop
+              target.current = waypointQueue.current.shift() ?? null;
+            }
           } else {
             const moved = step(tx, ty, dt);
             if (!moved) {
-              // stuck on an obstacle: give up, but still open the station if close enough
-              target.current = null;
-              if (tg.station && dist < 90) onStationRef.current(tg.station);
+              // stuck on an obstacle: skip to next waypoint if any,
+              // otherwise give up but still open the station if close enough
+              const nxt = waypointQueue.current.shift();
+              if (nxt) target.current = nxt;
+              else {
+                target.current = null;
+                if (tg.station && dist < 120) onStationRef.current(tg.station);
+              }
             }
           }
         }
@@ -544,13 +586,13 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
       </div>
 
       {/* quick-travel bar */}
-      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 sm:gap-1.5 px-2 py-1.5 rounded-2xl bg-[#0f172a]/85 border border-[#334155] backdrop-blur-sm max-w-[calc(100vw-1rem)]">
-        {BUILDINGS.map((b) => (
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex flex-wrap justify-center items-center gap-1 sm:gap-1.5 px-2 py-1.5 rounded-2xl bg-[#0f172a]/85 border border-[#334155] backdrop-blur-sm max-w-[calc(100vw-1rem)]">
+        {BUILDINGS.filter((b) => b.kind !== 'dungeon').map((b) => (
           <button
             key={b.id}
             onClick={() => travelTo(b.id)}
             title={b.labelAr}
-            className="relative w-9 h-9 sm:w-11 sm:h-11 flex items-center justify-center rounded-xl text-lg sm:text-xl transition cursor-pointer hover:scale-110"
+            className={`relative w-9 h-9 sm:w-11 sm:h-11 flex items-center justify-center rounded-xl text-lg sm:text-xl transition cursor-pointer hover:scale-110 ${b.kind === 'dungeon' ? 'ring-1 ring-amber-400/40 animate-pulse' : ''}`}
             style={{
               background: near?.id === b.id ? `${b.color}33` : 'transparent',
               border: `1px solid ${near?.id === b.id ? b.color : 'transparent'}`,

@@ -406,10 +406,8 @@ export class GameEngine {
     const clamped = Math.max(1, Math.min(10, Math.floor(difficulty)));
     this.dungeonDifficulty = clamped;
     this.pendingDifficulty = null;
-    this.enemies.length = 0;
-    this.pickups.length = 0;
-    this.projectiles.length = 0;
-    // Regenerate loot caches + restock town NPC buff shrines for the new tier.
+    this.pool.resetAll();
+    // Regenerate loot caches + restock world enemies for the new tier.
     this.generateWorldCaches();
     this.spawnWorldEnemies();
   }
@@ -423,13 +421,12 @@ export class GameEngine {
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
       const dist = 220 + Math.random() * (520 + this.dungeonDifficulty * 90);
-      this.pickups.push({
-        x: Math.cos(angle) * dist,
-        y: Math.sin(angle) * dist,
-        type: 'cache',
-        value: 5 + this.dungeonDifficulty * 4 + Math.floor(Math.random() * 6),
-        timer: 0,
-      });
+      const gem = this.pool.spawnGem(
+        Math.cos(angle) * dist,
+        Math.sin(angle) * dist,
+        5 + this.dungeonDifficulty * 4 + Math.floor(Math.random() * 6),
+      );
+      if (gem) gem.color = '#fbbf24'; // treasure-cache gems render gold
     }
   }
 
@@ -446,18 +443,19 @@ export class GameEngine {
       const dist = 380 + Math.random() * (600 + this.dungeonDifficulty * 120);
       const ex = Math.cos(angle) * dist;
       const ey = Math.sin(angle) * dist;
-      const kind = Math.random() < 0.2 + this.dungeonDifficulty * 0.05 ? 'brute' : 'grunt';
-      this.enemies.push({
-        x: ex,
-        y: ey,
-        hp: 30 * tierHpMul * (kind === 'brute' ? 2.2 : 1),
-        maxHp: 30 * tierHpMul * (kind === 'brute' ? 2.2 : 1),
-        speed: kind === 'brute' ? 55 : 85,
-        damage: 8 * tierDmgMul * (kind === 'brute' ? 1.6 : 1),
-        radius: kind === 'brute' ? 20 : 13,
-        type: kind,
-        hitFlash: 0,
-      });
+      const brute = Math.random() < 0.2 + this.dungeonDifficulty * 0.05;
+      const hp = 30 * tierHpMul * (brute ? 2.2 : 1);
+      const e = this.pool.spawnEnemy(
+        brute ? 'orc' : 'zombie',
+        ex, ey,
+        hp,
+        brute ? 55 : 85,
+        8 * tierDmgMul * (brute ? 1.6 : 1),
+        brute ? 20 : 13,
+        brute ? 6 : 3,
+        brute ? '#f97316' : '#22c55e',
+      );
+      if (e) e.hitFlashTimer = 0;
     }
   }
 
@@ -948,8 +946,7 @@ export class GameEngine {
       const sy = this.player.y + Math.sin(angle) * spawnDist;
 
       // Scale HP slightly with survival time + dungeon difficulty
-      const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
-      const timeScale = (1 + (this.timeSurvived / 120) * 0.45) * diff.enemyHpMultiplier;
+      const timeScale = (1 + (this.timeSurvived / 120) * 0.45) * (1 + (this.dungeonDifficulty - 1) * 0.35);
       const finalHp = Math.round(selected.baseHp * timeScale);
 
       const spawned = this.pool.spawnEnemy(
@@ -978,7 +975,7 @@ export class GameEngine {
     soundEngine.playEnemyDeath(true);
     this.addScreenShake(12);
 
-    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
+    const hpMul = 1 + (this.dungeonDifficulty - 1) * 0.35;
     const spawnDist = 550;
     const angle = Math.random() * Math.PI * 2;
     const sx = this.player.x + Math.cos(angle) * spawnDist;
@@ -988,7 +985,7 @@ export class GameEngine {
       bossDef.category,
       sx,
       sy,
-      Math.round(bossDef.hp * diff.enemyHpMultiplier),
+      Math.round(bossDef.hp * hpMul),
       bossDef.speed,
       bossDef.damage,
       bossDef.radius,
@@ -1308,8 +1305,8 @@ export class GameEngine {
   private hitPlayer(baseDamage: number) {
     if (this.player.invincibleTimer > 0) return;
 
-    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
-    const effectiveDamage = Math.max(3, baseDamage * diff.enemyDamageMultiplier - this.stats.armor);
+    const dmgMul = 1 + (this.dungeonDifficulty - 1) * 0.22;
+    const effectiveDamage = Math.max(3, baseDamage * dmgMul - this.stats.armor);
     this.stats.hp -= effectiveDamage;
     this.player.invincibleTimer = 0.42; // invincibility window
     this.hitVignetteTimer = 0.25;
@@ -1322,8 +1319,8 @@ export class GameEngine {
   public damageEnemy(enemy: EnemyEntity, damage: number, isCrit: boolean) {
     // Bosses are armored: they take 15% less damage from every source,
     // making burst builds less trivially effective against them.
-    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
-    const finalDamage = (enemy.isBoss ? damage * 0.85 : damage) * diff.playerDamageMultiplier;
+    const playerMul = Math.max(0.5, 1 - (this.dungeonDifficulty - 1) * 0.04);
+    const finalDamage = (enemy.isBoss ? damage * 0.85 : damage) * playerMul;
     enemy.hp -= finalDamage;
     enemy.hitFlashTimer = 0.12; // White hit flash!
     this.totalDamageDealt += finalDamage;
@@ -1503,7 +1500,8 @@ export class GameEngine {
 
     // 1.5 City gate: difficulty banner + wall hints (arena edge decoration)
     {
-      const gateX = this.cityGate.x;
+      const gateX = 0;
+      const WORLD_TOP = 240;
       ctx.save();
       // Stone wall bands flanking the gate
       ctx.fillStyle = 'rgba(71, 85, 105, 0.5)';
@@ -1516,7 +1514,7 @@ export class GameEngine {
       ctx.moveTo(gateX, -WORLD_TOP - 10);
       ctx.lineTo(gateX, -WORLD_TOP - 90);
       ctx.stroke();
-      const diff = Math.min(10, Math.max(1, Math.floor(this.cityDifficulty)));
+      const diff = this.getDifficulty();
       const hue = 120 - (diff - 1) * 24; // green -> red
       ctx.fillStyle = `hsl(${hue} 80% 50%)`;
       ctx.beginPath();

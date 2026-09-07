@@ -1,10 +1,11 @@
 import React from 'react';
-import { Play, RotateCcw, Volume2, VolumeX, Smartphone, Monitor, Sliders } from 'lucide-react';
+import { Play, RotateCcw, Home, Volume2, VolumeX, Smartphone, Monitor, Sliders } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
 
 interface PauseModalProps {
   onResume: () => void;
   onRestart: () => void;
+  onQuitToHub: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
   joystickOpacity?: number;
@@ -14,6 +15,7 @@ interface PauseModalProps {
 export const PauseModal: React.FC<PauseModalProps> = ({
   onResume,
   onRestart,
+  onQuitToHub,
   isMuted,
   onToggleMute,
   joystickOpacity = 0.4,
@@ -48,6 +50,15 @@ export const PauseModal: React.FC<PauseModalProps> = ({
           >
             <RotateCcw className="w-4 h-4" />
             إعادة المحاولة (Restart)
+          </button>
+
+          <button
+            id="btn-quit-to-hub"
+            onClick={onQuitToHub}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#0f172a] hover:bg-[#334155] text-slate-200 font-bold text-sm sm:text-base border border-[#334155] transition cursor-pointer shadow-md"
+          >
+            <Home className="w-4 h-4 text-amber-400" />
+            العودة للساحة (Hub)
           </button>
 
           <button

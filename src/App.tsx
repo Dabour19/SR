@@ -309,6 +309,10 @@ export default function App() {
         <PauseModal
           onResume={handleTogglePause}
           onRestart={handleStartGame}
+          onQuitToHub={() => {
+            if (isPaused) handleTogglePause();
+            setInGame(false);
+          }}
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
           joystickOpacity={joystickOpacity}
@@ -323,6 +327,11 @@ export default function App() {
           coinsEarned={coinsEarned ?? undefined}
           onRestart={handleStartGame}
           onOpenLeaderboard={() => setShowLeaderboardModal(true)}
+          onBackToHub={() => {
+            setGameOverStats(null);
+            setCoinsEarned(null);
+            setInGame(false);
+          }}
         />
       )}
 

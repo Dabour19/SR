@@ -142,11 +142,16 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
       return;
     }
     /* Dungeon gates in the wilderness: start the battle with a difficulty modifier. */
-    if (id.startsWith('dungeon')) {
+    if (id === 'dungeon1' || id === 'dungeon2' || id === 'dungeon3') {
       onStartGame(DUNGEON_DIFFICULTY[id] ?? 1);
       return;
     }
-    setTab(id);
+    if (id === 'shop' || id === 'characters' || id === 'crates' || id === 'friends') {
+      setTab(id);
+      return;
+    }
+    /* leaderboard / profile / help are overlays inside the hub — no tab change. */
+    if (id === 'help') setShowHelp(true);
   };
 
   const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
@@ -173,6 +178,8 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
           state={state}
           onStation={handleHubStation}
           onOpenAuth={onOpenAuth}
+          isMuted={isMuted}
+          onToggleMute={onToggleMute}
         />
 
         {/* Crate opening modal */}
@@ -635,7 +642,7 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
             🗺️ الساحة
           </button>
           <button
-            onClick={onStartGame}
+            onClick={() => onStartGame()}
             className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-black text-base shadow-[0_0_20px_rgba(34,211,238,0.4)] transition cursor-pointer"
           >
             ▶ ابدأ المعركة بالشخصية المختارة
