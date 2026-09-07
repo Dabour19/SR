@@ -1,1 +1,108 @@
 @import "tailwindcss";
+
+/* Crate opening shake animation */
+@keyframes crate-shake {
+  0% {
+    transform: rotate(-6deg) scale(1);
+  }
+  100% {
+    transform: rotate(6deg) scale(1.08);
+  }
+}
+
+.animate-bounce-slow {
+  animation: bounce 2.5s ease-in-out infinite;
+}
+@keyframes crate-shake {
+  0% {
+    transform: rotate(-6deg) scale(1);
+  }
+  100% {
+    transform: rotate(6deg) scale(1.08);
+  }
+}
+
+.animate-bounce-slow {
+  animation: bounce 2.5s ease-in-out infinite;
+}
+
+/* ===== Crate opening excitement animations ===== */
+
+/* Reel item ticker (fast spin) */
+@keyframes reel-spin {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-50%);
+  }
+}
+
+/* Winning item pop with overshoot */
+@keyframes reward-pop {
+  0% {
+    transform: scale(0.3) rotate(-12deg);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.25) rotate(4deg);
+    opacity: 1;
+  }
+  80% {
+    transform: scale(0.95) rotate(-2deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* Pulsing glow burst behind reward */
+@keyframes glow-burst {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+}
+
+/* Golden confetti / sparkle particles rising */
+@keyframes sparkle-rise {
+  0% {
+    transform: translateY(40px) scale(0.4) rotate(0deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-120px) scale(1.1) rotate(220deg);
+    opacity: 0;
+  }
+}
+
+/* Radiating shockwave rings on reveal */
+@keyframes shock-ring {
+  0% {
+    transform: scale(0.2);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+/* Countdown tick numbers flash */
+@keyframes tick-flash {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.4);
+  }
+}

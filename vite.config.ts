@@ -50,7 +50,10 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          cleanupOutdatedCaches: true,
         },
+        // registerType 'autoUpdate' (top) = skipWaiting + clientsClaim: the new
+        // service worker activates immediately and outdated caches are cleaned.
         devOptions: {
           enabled: false,
         },

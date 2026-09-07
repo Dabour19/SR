@@ -8,6 +8,8 @@ import { soundEngine } from '../audio/soundEngine';
 import {
   ActivePassive,
   ActiveWeapon,
+  CharacterId,
+  CharacterTheme,
   EnemyEntity,
   GameRunStats,
   PassiveType,
@@ -17,6 +19,7 @@ import {
 } from '../types';
 import { ObjectPoolSystem } from './objectPool';
 import { getCurrentWave, WAVE_SCHEDULE } from './waves';
+import { DUNGEON_DIFFICULTY, type HubStationId } from './cityScene';
 
 export interface GameEngineCallbacks {
   onLevelUp: (level: number) => void;
@@ -92,6 +95,11 @@ export class GameEngine {
 
   // Loadout
   public weapons: Map<WeaponType, ActiveWeapon> = new Map();
+
+  // Character config from Lobby (defaults = starter 'blade')
+  private characterBaseHp: number = 100;
+  private characterSpeedMultiplier: number = 1.0;
+  private characterDamageMultiplier: number = 1.0;
   public passives: Map<PassiveType, ActivePassive> = new Map();
 
   // Weapon internal state
@@ -215,8 +223,45 @@ export class GameEngine {
     this.inputVector.y = y;
   }
 
-  public initNewGame() {
+  /** Configure the run from the Lobby: selected character + owned perks. */
+  public setLoadout(config: {
+    characterId: CharacterId;
+    maxHp: number;
+    speedMultiplier: number;
+    damageMultiplier: number;
+    startingWeapons: WeaponType[];
+    theme: CharacterTheme;
+    applyPerks: (stats: PlayerStats) => void;
+  }) {
+    this.characterId = config.characterId;
+    this.characterBaseHp = config.maxHp;
+    this.characterSpeedMultiplier = config.speedMultiplier;
+    this.characterDamageMultiplier = config.damageMultiplier;
+    this.characterStartingWeapons = config.startingWeapons;
+    this.characterTheme = config.theme;
+    this.perkApplier = config.applyPerks;
+  }
+
+  private perkApplier: ((stats: PlayerStats) => void) | null = null;
+  private dungeonDifficulty: number = 1;
+  private pendingDifficulty: number | null = null;
+  private characterId: CharacterId = 'blade';
+  private characterStartingWeapons: WeaponType[] = ['spinning_blades', 'arcane_burst'];
+  private characterTheme: CharacterTheme = {
+    cape: '#0f172a',
+    trim: '#22d3ee',
+    glow: '#22d3ee',
+    accent: '#0284c7',
+    boot: '#38bdf8',
+  };
+
+  public initNewGame(difficulty?: number) {
+    if (typeof difficulty === 'number') {
+      this.pendingDifficulty = difficulty;
+    }
     this.pool.resetAll();
+    this.dungeonDifficulty = this.pendingDifficulty;
+    this.pendingDifficulty = null;
     this.timeSurvived = 0;
     this.kills = 0;
     this.totalDamageDealt = 0;
@@ -234,15 +279,20 @@ export class GameEngine {
     this.player.invincibleTimer = 0;
 
     this.stats = {
-      maxHp: 100,
-      hp: 100,
-      hpRegen: 0.2,
-      speed: 175,
+      maxHp: this.characterBaseHp,
+      hp: this.characterBaseHp,
+      hpRegen: 0.05,
+      speed: Math.round(175 * this.characterSpeedMultiplier),
       pickupRadius: 85,
-      damageMultiplier: 1.0,
+      damageMultiplier: this.characterDamageMultiplier,
       cooldownReduction: 0.0,
       armor: 0,
     };
+    // Apply owned shop perks (armor, magnet, speed, regen, etc.)
+    this.perkApplier?.(this.stats);
+
+    // Seed the open world with the chosen dungeon difficulty (from Lobby).
+    this.setWorldDifficulty(this.dungeonDifficulty);
 
     this.camera.x = 0;
     this.camera.y = 0;
@@ -255,10 +305,11 @@ export class GameEngine {
     this.activeBoss = null;
     this.lightningStrikes = [];
 
-    // Starting loadout: Spinning Blades + Arcane Burst
+    // Starting loadout: per-character signature weapons (matched from Lobby)
     this.weapons.clear();
-    this.weapons.set('spinning_blades', { id: 'spinning_blades', level: 1, timer: 0 });
-    this.weapons.set('arcane_burst', { id: 'arcane_burst', level: 1, timer: 0.2 });
+    for (const w of this.characterStartingWeapons) {
+      this.weapons.set(w, { id: w, level: 1, timer: w === 'arcane_burst' ? 0.2 : 0 });
+    }
 
     this.passives.clear();
     this.applyPassiveBonuses();
@@ -294,11 +345,11 @@ export class GameEngine {
   }
 
   private applyPassiveBonuses() {
-    let speed = 175;
-    let maxHp = 100;
-    let regen = 0.2;
+    let speed = 175 * this.characterSpeedMultiplier;
+    let maxHp = this.characterBaseHp;
+    let regen = 0.05;
     let pickupRadius = 85;
-    let damageMultiplier = 1.0;
+    let damageMultiplier = this.characterDamageMultiplier;
     let cooldownReduction = 0.0;
     let armor = 0;
 
@@ -308,7 +359,7 @@ export class GameEngine {
         speed += lvl * 22;
       } else if (type === 'vitality') {
         maxHp += lvl * 25;
-        regen += lvl * 0.9;
+        regen += lvl * 0.35;
       } else if (type === 'magnet') {
         pickupRadius += lvl * 38;
       } else if (type === 'might') {
@@ -329,6 +380,85 @@ export class GameEngine {
     this.stats.damageMultiplier = damageMultiplier;
     this.stats.cooldownReduction = cooldownReduction;
     this.stats.armor = armor;
+  }
+
+  /**
+   * Configure the open world before `initNewGame()`.
+   * Called by Lobby with the dungeon difficulty the player selected.
+   * This does NOT generate anything immediately — the actual spawn/scaling
+   * happens in `initNewGame()` where `setWorldDifficulty` re-seeds the world.
+   */
+  public setPendingDifficulty(difficulty: number) {
+    const clamped = Math.max(1, Math.min(10, Math.floor(difficulty)));
+    this.dungeonDifficulty = clamped;
+    this.pendingDifficulty = clamped;
+  }
+
+  public getDifficulty(): number {
+    return this.dungeonDifficulty;
+  }
+
+  /**
+   * Re-seed world content for a difficulty tier. Also wipes any existing
+   * enemies/pickups so the player never fights stale low-tier mobs.
+   */
+  public setWorldDifficulty(difficulty: number) {
+    const clamped = Math.max(1, Math.min(10, Math.floor(difficulty)));
+    this.dungeonDifficulty = clamped;
+    this.pendingDifficulty = null;
+    this.enemies.length = 0;
+    this.pickups.length = 0;
+    this.projectiles.length = 0;
+    // Regenerate loot caches + restock town NPC buff shrines for the new tier.
+    this.generateWorldCaches();
+    this.spawnWorldEnemies();
+  }
+
+  /**
+   * Spawn treasure caches scattered around the world. Higher tiers grant
+   * better rewards. Caches are one-shot and re-roll each difficulty tier.
+   */
+  private generateWorldCaches() {
+    const count = 3 + Math.floor(this.dungeonDifficulty * 1.5);
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
+      const dist = 220 + Math.random() * (520 + this.dungeonDifficulty * 90);
+      this.pickups.push({
+        x: Math.cos(angle) * dist,
+        y: Math.sin(angle) * dist,
+        type: 'cache',
+        value: 5 + this.dungeonDifficulty * 4 + Math.floor(Math.random() * 6),
+        timer: 0,
+      });
+    }
+  }
+
+  /**
+   * Seed initial enemy population outside the city walls.
+   * Difficulty scales both spawn count and enemy strength directly.
+   */
+  private spawnWorldEnemies() {
+    const base = 8 + this.dungeonDifficulty * 5;
+    const tierHpMul = 1 + (this.dungeonDifficulty - 1) * 0.35;
+    const tierDmgMul = 1 + (this.dungeonDifficulty - 1) * 0.22;
+    for (let i = 0; i < base; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 380 + Math.random() * (600 + this.dungeonDifficulty * 120);
+      const ex = Math.cos(angle) * dist;
+      const ey = Math.sin(angle) * dist;
+      const kind = Math.random() < 0.2 + this.dungeonDifficulty * 0.05 ? 'brute' : 'grunt';
+      this.enemies.push({
+        x: ex,
+        y: ey,
+        hp: 30 * tierHpMul * (kind === 'brute' ? 2.2 : 1),
+        maxHp: 30 * tierHpMul * (kind === 'brute' ? 2.2 : 1),
+        speed: kind === 'brute' ? 55 : 85,
+        damage: 8 * tierDmgMul * (kind === 'brute' ? 1.6 : 1),
+        radius: kind === 'brute' ? 20 : 13,
+        type: kind,
+        hitFlash: 0,
+      });
+    }
   }
 
   public pause() {
@@ -817,8 +947,9 @@ export class GameEngine {
       const sx = this.player.x + Math.cos(angle) * spawnDist;
       const sy = this.player.y + Math.sin(angle) * spawnDist;
 
-      // Scale HP slightly with survival time
-      const timeScale = 1 + (this.timeSurvived / 120) * 0.45;
+      // Scale HP slightly with survival time + dungeon difficulty
+      const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
+      const timeScale = (1 + (this.timeSurvived / 120) * 0.45) * diff.enemyHpMultiplier;
       const finalHp = Math.round(selected.baseHp * timeScale);
 
       const spawned = this.pool.spawnEnemy(
@@ -847,6 +978,7 @@ export class GameEngine {
     soundEngine.playEnemyDeath(true);
     this.addScreenShake(12);
 
+    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
     const spawnDist = 550;
     const angle = Math.random() * Math.PI * 2;
     const sx = this.player.x + Math.cos(angle) * spawnDist;
@@ -856,7 +988,7 @@ export class GameEngine {
       bossDef.category,
       sx,
       sy,
-      bossDef.hp,
+      Math.round(bossDef.hp * diff.enemyHpMultiplier),
       bossDef.speed,
       bossDef.damage,
       bossDef.radius,
@@ -1176,7 +1308,8 @@ export class GameEngine {
   private hitPlayer(baseDamage: number) {
     if (this.player.invincibleTimer > 0) return;
 
-    const effectiveDamage = Math.max(3, baseDamage - this.stats.armor);
+    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
+    const effectiveDamage = Math.max(3, baseDamage * diff.enemyDamageMultiplier - this.stats.armor);
     this.stats.hp -= effectiveDamage;
     this.player.invincibleTimer = 0.42; // invincibility window
     this.hitVignetteTimer = 0.25;
@@ -1189,7 +1322,8 @@ export class GameEngine {
   public damageEnemy(enemy: EnemyEntity, damage: number, isCrit: boolean) {
     // Bosses are armored: they take 15% less damage from every source,
     // making burst builds less trivially effective against them.
-    const finalDamage = enemy.isBoss ? damage * 0.85 : damage;
+    const diff = DUNGEON_DIFFICULTY[this.dungeonDifficulty] ?? DUNGEON_DIFFICULTY.normal;
+    const finalDamage = (enemy.isBoss ? damage * 0.85 : damage) * diff.playerDamageMultiplier;
     enemy.hp -= finalDamage;
     enemy.hitFlashTimer = 0.12; // White hit flash!
     this.totalDamageDealt += finalDamage;
@@ -1366,6 +1500,37 @@ export class GameEngine {
 
     // 1. Draw Endless Arena Floor Tiles & Markers
     this.renderFloor(ctx, width, height);
+
+    // 1.5 City gate: difficulty banner + wall hints (arena edge decoration)
+    {
+      const gateX = this.cityGate.x;
+      ctx.save();
+      // Stone wall bands flanking the gate
+      ctx.fillStyle = 'rgba(71, 85, 105, 0.5)';
+      ctx.fillRect(gateX - 190, -WORLD_TOP - 60, 60, WORLD_TOP + 130);
+      ctx.fillRect(gateX + 130, -WORLD_TOP - 60, 60, WORLD_TOP + 130);
+      // Banner pole + difficulty pennant above the gate
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(gateX, -WORLD_TOP - 10);
+      ctx.lineTo(gateX, -WORLD_TOP - 90);
+      ctx.stroke();
+      const diff = Math.min(10, Math.max(1, Math.floor(this.cityDifficulty)));
+      const hue = 120 - (diff - 1) * 24; // green -> red
+      ctx.fillStyle = `hsl(${hue} 80% 50%)`;
+      ctx.beginPath();
+      ctx.moveTo(gateX, -WORLD_TOP - 88);
+      ctx.lineTo(gateX + 66, -WORLD_TOP - 74);
+      ctx.lineTo(gateX, -WORLD_TOP - 60);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(` Lv.${diff} `, gateX + 22, -WORLD_TOP - 70);
+      ctx.restore();
+    }
 
     // 2. Draw Holy Aura Field
     const holy = this.weapons.get('holy_aura');
@@ -1717,12 +1882,13 @@ export class GameEngine {
     const bob = isMoving ? Math.sin(p.walkCycle) * 3 : Math.sin(this.timeSurvived * 3) * 1.2;
     const legSwing = isMoving ? Math.sin(p.walkCycle) * 6 : 0;
 
-    // Outer runic aura ring (pulsing with level)
+    // Outer runic aura ring (pulsing with level) — themed by selected character
+    const T = this.characterTheme;
     ctx.save();
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.4)';
+    ctx.strokeStyle = T.trim + '66';
     ctx.lineWidth = 1.8;
     ctx.setLineDash([4, 4]);
-    ctx.shadowColor = '#22d3ee';
+    ctx.shadowColor = T.glow;
     ctx.shadowBlur = 10;
     ctx.beginPath();
     ctx.arc(0, 4, p.radius + 14, 0, Math.PI * 2);
@@ -1738,8 +1904,8 @@ export class GameEngine {
       const my = Math.sin(mAngle) * (mDist * 0.45) + 2;
 
       ctx.save();
-      ctx.fillStyle = '#67e8f9';
-      ctx.shadowColor = '#38bdf8';
+      ctx.fillStyle = T.trim;
+      ctx.shadowColor = T.glow;
       ctx.shadowBlur = 8;
       ctx.beginPath();
       ctx.arc(mx, my, 2.2, 0, Math.PI * 2);
@@ -1761,7 +1927,7 @@ export class GameEngine {
     // 1. Flowing Royal Cape (Rippling backwards behind hero)
     ctx.save();
     const capeFlutter = isMoving ? Math.sin(p.walkCycle * 1.5) * 5 : Math.sin(this.timeSurvived * 4) * 2;
-    ctx.fillStyle = '#0f172a'; // Deep obsidian-navy cape
+    ctx.fillStyle = T.cape;
     ctx.beginPath();
     ctx.moveTo(-6, bob - 2);
     ctx.quadraticCurveTo(-16 - (isMoving ? 8 : 2), bob + 10 + capeFlutter, -14 - (isMoving ? 12 : 3), bob + 20 + capeFlutter);
@@ -1770,8 +1936,8 @@ export class GameEngine {
     ctx.closePath();
     ctx.fill();
 
-    // Golden / Cyan trim on Cape
-    ctx.strokeStyle = '#22d3ee';
+    // Themed trim on Cape
+    ctx.strokeStyle = T.trim;
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.restore();
@@ -1783,28 +1949,28 @@ export class GameEngine {
     // Right Leg / Boot
     ctx.fillRect(2, bob + 9 + legSwing * 0.4, 5, 8 - legSwing * 0.5);
 
-    // Boot Greave Caps (Cyan glow runes)
-    ctx.fillStyle = '#38bdf8';
+    // Boot Greave Caps (themed glow runes)
+    ctx.fillStyle = T.boot;
     ctx.fillRect(-8, bob + 14 - legSwing * 0.4, 6, 2.5);
     ctx.fillRect(1, bob + 14 + legSwing * 0.4, 6, 2.5);
 
     // 3. Knight Cuirass / Torso Plate
     ctx.save();
-    ctx.shadowColor = '#22d3ee';
+    ctx.shadowColor = T.glow;
     ctx.shadowBlur = 12;
 
-    // Steel-Cyan Chestplate
-    ctx.fillStyle = '#1e293b';
+    // Steel Chestplate (themed)
+    ctx.fillStyle = T.cape;
     ctx.beginPath();
     ctx.roundRect(-10, bob - 6, 20, 16, 4);
     ctx.fill();
 
-    ctx.strokeStyle = '#38bdf8';
+    ctx.strokeStyle = T.boot;
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Golden Armor Trim & Shoulder Pauldrons
-    ctx.fillStyle = '#0284c7';
+    // Themed Armor Trim & Shoulder Pauldrons
+    ctx.fillStyle = T.accent;
     // Left shoulder pauldron
     ctx.beginPath();
     ctx.arc(-11, bob - 4, 4.5, 0, Math.PI * 2);
@@ -1815,7 +1981,7 @@ export class GameEngine {
     ctx.fill();
 
     // Arcane Chest Crest (Pulsing Diamond Mana Core)
-    ctx.fillStyle = '#22d3ee';
+    ctx.fillStyle = T.trim;
     ctx.beginPath();
     ctx.moveTo(0, bob - 4);
     ctx.lineTo(4, bob);
@@ -1833,7 +1999,7 @@ export class GameEngine {
     // 4. Heroic Hood & Visor Helmet
     ctx.save();
     // Dark Rogue Cowl Hood
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = T.cape;
     ctx.beginPath();
     ctx.arc(0, bob - 10, 11, 0, Math.PI * 2);
     ctx.fill();
@@ -1842,9 +2008,9 @@ export class GameEngine {
     ctx.fillStyle = '#334155';
     ctx.fillRect(-6, bob - 12, 12, 6);
 
-    // Piercing Neon Cyan Warrior Slit Eyes
-    ctx.fillStyle = '#22d3ee';
-    ctx.shadowColor = '#22d3ee';
+    // Piercing Neon Warrior Slit Eyes (themed)
+    ctx.fillStyle = T.trim;
+    ctx.shadowColor = T.glow;
     ctx.shadowBlur = 10;
     ctx.fillRect(1, bob - 11, 6, 2.5);
 
@@ -1871,8 +2037,8 @@ export class GameEngine {
     ctx.arc(0, 7.5, 2, 0, Math.PI * 2);
     ctx.fill();
 
-    // Gleaming Runic Steel Blade
-    ctx.shadowColor = '#38bdf8';
+    // Gleaming Runic Steel Blade (themed glow)
+    ctx.shadowColor = T.boot;
     ctx.shadowBlur = 10;
     ctx.fillStyle = '#e0f2fe';
     ctx.beginPath();
@@ -1882,10 +2048,10 @@ export class GameEngine {
     ctx.closePath();
     ctx.fill();
 
-    // Inner glowing cyan blade fuller/rune
-    ctx.fillStyle = '#0284c7';
+    // Inner glowing themed blade fuller/rune
+    ctx.fillStyle = T.accent;
     ctx.fillRect(-0.8, -16, 1.6, 14);
-    ctx.fillStyle = '#38bdf8';
+    ctx.fillStyle = T.boot;
     ctx.fillRect(-0.4, -14, 0.8, 10);
     ctx.restore();
 

@@ -2,19 +2,19 @@
  * Core types for Survivor Rogue: 2D Auto-Shooter
  */
 
-export type WeaponType = 
-  | 'spinning_blades' 
-  | 'arcane_burst' 
-  | 'holy_aura' 
-  | 'lightning_strike' 
+export type WeaponType =
+  | 'spinning_blades'
+  | 'arcane_burst'
+  | 'holy_aura'
+  | 'lightning_strike'
   | 'fire_wand';
 
-export type PassiveType = 
-  | 'magnet' 
-  | 'swift_boots' 
-  | 'might' 
-  | 'vitality' 
-  | 'armor' 
+export type PassiveType =
+  | 'magnet'
+  | 'swift_boots'
+  | 'might'
+  | 'vitality'
+  | 'armor'
   | 'haste';
 
 export type UpgradeItemType = WeaponType | PassiveType;
@@ -80,14 +80,14 @@ export interface UpgradeOption {
   color: string;
 }
 
-export type EnemyCategory = 
-  | 'bat' 
-  | 'zombie' 
-  | 'skeleton' 
-  | 'ghost' 
-  | 'orc' 
+export type EnemyCategory =
+  | 'bat'
+  | 'zombie'
+  | 'skeleton'
+  | 'ghost'
+  | 'orc'
   | 'fire_mage'
-  | 'minotaur_boss' 
+  | 'minotaur_boss'
   | 'reaper_boss';
 
 export interface EnemyEntity {
@@ -200,20 +200,20 @@ export interface GameRunStats {
   victory: boolean;
 }
 
-export type PlayerTier = 
-  | 'bronze' 
-  | 'silver' 
-  | 'gold' 
-  | 'platinum' 
-  | 'diamond' 
+export type PlayerTier =
+  | 'bronze'
+  | 'silver'
+  | 'gold'
+  | 'platinum'
+  | 'diamond'
   | 'legend';
 
-export type PlayerAvatar = 
-  | 'blade' 
-  | 'mage' 
-  | 'hunter' 
-  | 'paladin' 
-  | 'wraith' 
+export type PlayerAvatar =
+  | 'blade'
+  | 'mage'
+  | 'hunter'
+  | 'paladin'
+  | 'wraith'
   | 'berserker';
 
 export interface PlayerRunHistory {
@@ -267,3 +267,118 @@ export interface LeaderboardRecord {
 }
 
 export type LeaderboardFilter = 'score' | 'time' | 'kills' | 'level';
+
+/* ==================== LOBBY / SHOP / CRATE SYSTEM ==================== */
+
+export type CharacterId = 'blade' | 'mage' | 'hunter' | 'paladin' | 'wraith' | 'berserker';
+
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
+
+export interface RarityInfo {
+  rarity: Rarity;
+  labelAr: string;
+  color: string; // text color hex
+  bg: string; // tailwind bg class (e.g. from-x /50)
+  border: string; // tailwind border class
+  glow: string; // box-shadow color
+  weight: number; // relative drop chance weight
+}
+
+export interface CharacterDef {
+  id: CharacterId;
+  name: string;
+  nameAr: string;
+  titleAr: string;
+  emoji: string;
+  rarity: Rarity;
+  price: number; // in coins (0 = owned by default)
+  isStarter?: boolean;
+  // Gameplay modifiers
+  baseHp: number;
+  speedMultiplier: number;
+  damageMultiplier: number;
+  descriptionAr: string;
+  startingWeapons?: WeaponType[]; // extra starting weapons (blade/mage get defaults)
+  /** In-game visual identity, matching the lobby character. */
+  theme: CharacterTheme;
+}
+
+export interface CharacterTheme {
+  cape: string; // cloak color
+  trim: string; // glowing trim / rune color
+  glow: string; // aura + shadow glow
+  accent: string; // pauldrons / secondary armor
+  boot: string; // boot rune caps
+}
+
+export type CrateId = 'wooden' | 'silver' | 'golden' | 'mythic';
+
+export interface CrateDef {
+  id: CrateId;
+  name: string;
+  nameAr: string;
+  emoji: string;
+  price: number; // in coins
+  // Weights per rarity for this crate
+  dropWeights: Record<Rarity, number>;
+  color: string;
+}
+
+export type ShopItemId = 'double_coins' | 'extra_armor' | 'magnet_plus' | 'swift_start' | 'regen_boost' | 'lucky_charm';
+
+export interface ShopItemDef {
+  id: ShopItemId;
+  name: string;
+  nameAr: string;
+  emoji: string;
+  descriptionAr: string;
+  price: number;
+  rarity: Rarity;
+  isConsumable: boolean; // consumables can be bought multiple times
+  /** Stat bonus applied when the character starts a run */
+  applyToStats?: (stats: PlayerStats) => void;
+}
+
+/* ==================== FRIENDS & TEAM / MULTIPLAYER ==================== */
+
+export type FriendStatus = 'pending' | 'accepted';
+
+export interface FriendDoc {
+  id: string; // `${requesterId}_${targetId}`
+  requesterId: string;
+  requesterName: string;
+  requesterAvatar: PlayerAvatar;
+  targetId: string;
+  targetName: string;
+  targetAvatar: PlayerAvatar;
+  status: FriendStatus;
+  createdAt: number;
+}
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  avatar: PlayerAvatar;
+  isHost: boolean;
+  selectedCharacter: CharacterId;
+  joinedAt: number;
+  lastSeen: number;
+  ready: boolean;
+}
+
+export interface TeamDoc {
+  code: string; // 6-char join code (document id)
+  hostId: string;
+  members: TeamMember[];
+  createdAt: number;
+  matchStartedAt?: number; // set by host when starting a co-op match
+}
+
+export interface LobbyState {
+  coins: number;
+  ownedCharacters: CharacterId[];
+  selectedCharacter: CharacterId;
+  ownedShopItems: ShopItemId[]; // permanent perks owned
+  cratesOpened: number;
+  totalSpent: number;
+}

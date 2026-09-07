@@ -35,7 +35,7 @@ export const WAVE_SCHEDULE: WaveConfig[] = [
   {
     minTime: 0,
     maxTime: 120,
-    spawnRate: 2.2,
+    spawnRate: 2.6,
     enemies: [
       {
         category: 'bat',
@@ -76,7 +76,7 @@ export const WAVE_SCHEDULE: WaveConfig[] = [
   {
     minTime: 120,
     maxTime: 300,
-    spawnRate: 4.2,
+    spawnRate: 4.9,
     enemies: [
       {
         category: 'bat',
@@ -137,7 +137,7 @@ export const WAVE_SCHEDULE: WaveConfig[] = [
   {
     minTime: 300,
     maxTime: 600,
-    spawnRate: 6.8,
+    spawnRate: 7.8,
     enemies: [
       {
         category: 'ghost',
@@ -198,7 +198,7 @@ export const WAVE_SCHEDULE: WaveConfig[] = [
   {
     minTime: 600,
     maxTime: 900,
-    spawnRate: 10.0,
+    spawnRate: 11.5,
     enemies: [
       {
         category: 'bat',
@@ -269,7 +269,7 @@ export const WAVE_SCHEDULE: WaveConfig[] = [
   {
     minTime: 900,
     maxTime: 1200,
-    spawnRate: 14.5,
+    spawnRate: 16.5,
     enemies: [
       {
         category: 'bat',

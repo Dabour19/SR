@@ -5,12 +5,14 @@ import { playerAuthService, TierInfo } from '../services/playerAuthService';
 
 interface GameOverModalProps {
   stats: GameRunStats;
+  coinsEarned?: number;
   onRestart: () => void;
   onOpenLeaderboard: () => void;
 }
 
 export const GameOverModal: React.FC<GameOverModalProps> = ({
   stats,
+  coinsEarned,
   onRestart,
   onOpenLeaderboard,
 }) => {
@@ -107,6 +109,11 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             {runResult.isNewBest && (
               <div className="mt-2 pt-1.5 border-t border-[#334155] text-center text-xs font-bold text-emerald-400">
                 🔥 رقم قياسي شخصي جديد! تم تحديث تصنيفك العام!
+              </div>
+            )}
+            {coinsEarned !== undefined && (
+              <div className="mt-2 pt-1.5 border-t border-[#334155] text-center text-xs font-bold text-amber-300">
+                🪙 ربحت {coinsEarned.toLocaleString()} عملة من هذه الجولة!
               </div>
             )}
           </div>
