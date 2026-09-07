@@ -12,13 +12,15 @@ import {
   Swords,
   Zap,
 } from 'lucide-react';
-import { ActivePassive, ActiveWeapon, UpgradeOption, WeaponType, PassiveType } from '../types';
+import { ActivePassive, ActiveWeapon, CharacterId, UpgradeOption, WeaponType, PassiveType } from '../types';
 import { WEAPON_REGISTRY, getWeaponLevelDescription } from '../game/weapons';
 import { PASSIVE_REGISTRY } from '../game/passives';
 import { soundEngine } from '../audio/soundEngine';
 
 interface LevelUpModalProps {
   level: number;
+  characterId: CharacterId;
+  characterLevel: number;
   currentWeapons: Map<WeaponType, ActiveWeapon>;
   currentPassives: Map<PassiveType, ActivePassive>;
   onSelectUpgrade: (id: WeaponType | PassiveType, isWeapon: boolean) => void;
@@ -26,6 +28,8 @@ interface LevelUpModalProps {
 
 export const LevelUpModal: React.FC<LevelUpModalProps> = ({
   level,
+  characterId,
+  characterLevel,
   currentWeapons,
   currentPassives,
   onSelectUpgrade,
@@ -34,8 +38,12 @@ export const LevelUpModal: React.FC<LevelUpModalProps> = ({
   const options: UpgradeOption[] = useMemo(() => {
     const pool: UpgradeOption[] = [];
 
-    // Weapon options
+    // Weapon options (filtered by character exclusivity + unlock level)
     for (const [wKey, def] of Object.entries(WEAPON_REGISTRY)) {
+      // Exclusive weapons only appear for their character, and only after
+      // the character reached the required meta level (skill tree).
+      if (def.exclusiveTo && def.exclusiveTo !== characterId) continue;
+      if (def.unlockLevel && characterLevel < def.unlockLevel) continue;
       const active = currentWeapons.get(wKey as WeaponType);
       const currLevel = active ? active.level : 0;
       if (currLevel < def.maxLevel) {
@@ -86,7 +94,7 @@ export const LevelUpModal: React.FC<LevelUpModalProps> = ({
     }
 
     return pool.slice(0, 3);
-  }, [currentWeapons, currentPassives]);
+  }, [currentWeapons, currentPassives, characterId, characterLevel]);
 
   const renderIcon = (iconName: string) => {
     const props = { className: 'w-8 h-8' };

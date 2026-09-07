@@ -107,6 +107,12 @@ export default function App() {
     );
     const earned = lobbyService.addRunCoins(raw);
     setCoinsEarned(earned);
+    // Grant character XP (meta progression for the skill tree)
+    const charXp = Math.floor(stats.timeSurvived * 0.8 + stats.enemiesKilled * 0.4 + stats.level * 6);
+    const xpRes = lobbyService.addCharacterXp(lobbyService.getState().selectedCharacter, charXp);
+    if (xpRes.levelsGained > 0) {
+      soundEngine.playLevelUp();
+    }
     try {
       const savedTime = parseInt(localStorage.getItem('survivor_best_time') || '0', 10);
       const savedKills = parseInt(localStorage.getItem('survivor_best_kills') || '0', 10);
@@ -150,11 +156,28 @@ export default function App() {
   // Exit lobby back to main menu (زر الرجوع)
   const handleExitToMenu = () => {
     soundEngine.setMuted(true);
+    engineRef.current?.stopRun();
     setInGame(false);
     setIsPaused(false);
     setGameOverStats(null);
     setCoinsEarned(null);
     setLevelUpLevel(null);
+  };
+
+  /**
+   * Quit an active run back to the hub. Stops the engine loop entirely so no
+   * kills / level-ups keep happening in the background after leaving.
+   */
+  const handleQuitToHub = () => {
+    if (isPaused) {
+      engineRef.current?.resume(); // restore paused flag before stopping cleanly
+    }
+    engineRef.current?.stopRun();
+    setIsPaused(false);
+    setLevelUpLevel(null);
+    setGameOverStats(null);
+    setCoinsEarned(null);
+    setInGame(false);
   };
 
   // Start game
@@ -298,6 +321,8 @@ export default function App() {
       {levelUpLevel !== null && engineRef.current && (
         <LevelUpModal
           level={levelUpLevel}
+          characterId={lobbyService.getState().selectedCharacter}
+          characterLevel={lobbyService.getProgress(lobbyService.getState().selectedCharacter).level}
           currentWeapons={engineRef.current.weapons}
           currentPassives={engineRef.current.passives}
           onSelectUpgrade={handleSelectUpgrade}
@@ -309,10 +334,7 @@ export default function App() {
         <PauseModal
           onResume={handleTogglePause}
           onRestart={handleStartGame}
-          onQuitToHub={() => {
-            if (isPaused) handleTogglePause();
-            setInGame(false);
-          }}
+          onQuitToHub={handleQuitToHub}
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
           joystickOpacity={joystickOpacity}
@@ -327,11 +349,7 @@ export default function App() {
           coinsEarned={coinsEarned ?? undefined}
           onRestart={handleStartGame}
           onOpenLeaderboard={() => setShowLeaderboardModal(true)}
-          onBackToHub={() => {
-            setGameOverStats(null);
-            setCoinsEarned(null);
-            setInGame(false);
-          }}
+          onBackToHub={handleQuitToHub}
         />
       )}
 

@@ -36,8 +36,24 @@ import { CrateOpeningModal } from './CrateOpeningModal';
 import { HelpModal } from './HelpModal';
 import { playerAuthService, determineTier } from '../services/playerAuthService';
 import { friendsService } from '../services/friendsService';
+import {
+  getSkillTree,
+  getNodeRank,
+  xpForNextLevel,
+  MAX_CHARACTER_LEVEL,
+  SIGNATURE_WEAPON_UNLOCK_LEVEL,
+  CHARACTER_EXCLUSIVE_WEAPON,
+} from '../game/skillTree';
+import { WEAPON_REGISTRY } from '../game/weapons';
 
-type Tab = 'hub' | 'home' | 'characters' | 'shop' | 'crates' | 'friends';
+/** Minimum character level required to enter each dungeon gate. */
+const DUNGEON_REQUIRED_LEVEL: Partial<Record<HubStationId, number>> = {
+  dungeon1: 1,
+  dungeon2: 4,
+  dungeon3: 8,
+};
+
+type Tab = 'hub' | 'home' | 'characters' | 'skills' | 'shop' | 'crates' | 'friends';
 
 interface LobbyProps {
   onBack: () => void;
@@ -141,8 +157,15 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
       onStartGame();
       return;
     }
-    /* Dungeon gates in the wilderness: start the battle with a difficulty modifier. */
+    /* Dungeon gates in the wilderness: start the battle with a difficulty modifier.
+       Gates are gated behind the selected character's level. */
     if (id === 'dungeon1' || id === 'dungeon2' || id === 'dungeon3') {
+      const required = DUNGEON_REQUIRED_LEVEL[id] ?? 1;
+      const charLevel = lobbyService.getProgress(state.selectedCharacter).level;
+      if (charLevel < required) {
+        showToast(`هذا الدنجن يتطلب مستوى الشخصية ${required} (مستواك: ${charLevel}) 🔒`);
+        return;
+      }
       onStartGame(DUNGEON_DIFFICULTY[id] ?? 1);
       return;
     }
@@ -158,6 +181,7 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
     { id: 'hub', label: 'الساحة', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'home', label: 'الرئيسية', icon: <User className="w-4 h-4" /> },
     { id: 'characters', label: 'الشخصيات', icon: <Users className="w-4 h-4" /> },
+    { id: 'skills', label: 'المهارات', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'shop', label: 'المتجر', icon: <Store className="w-4 h-4" /> },
     { id: 'crates', label: 'الصناديق', icon: <Package className="w-4 h-4" /> },
     { id: 'friends', label: 'الأصدقاء', icon: <UserPlus className="w-4 h-4" /> },
@@ -530,6 +554,117 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
               })}
             </div>
           )}
+
+          {tab === 'skills' && (() => {
+            const charId = state.selectedCharacter;
+            const progress = lobbyService.getProgress(charId);
+            const xpNeed = xpForNextLevel(progress.level);
+            const tree = getSkillTree(charId);
+            const sigWeapon = WEAPON_REGISTRY[CHARACTER_EXCLUSIVE_WEAPON[charId]];
+            const sigUnlocked = progress.level >= SIGNATURE_WEAPON_UNLOCK_LEVEL;
+            const handleUpgradeNode = (nodeId: string) => {
+              const res = lobbyService.upgradeSkillNode(charId, nodeId);
+              showToast(res.success ? 'تم ترقية المهارة! ✨' : res.error || 'فشل الترقية');
+            };
+            return (
+              <div className="space-y-4">
+                {/* Level & XP banner */}
+                <div className="p-4 rounded-2xl bg-[#1e293b] border border-cyan-500/40">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="text-3xl w-11 h-11 flex items-center justify-center rounded-xl bg-[#0f172a] border border-[#334155]">
+                        {selectedChar.emoji}
+                      </div>
+                      <div>
+                        <div className="font-black text-white text-sm">شجرة مهارات: {selectedChar.nameAr}</div>
+                        <div className="text-[11px] text-slate-400">المستوى {progress.level} / {MAX_CHARACTER_LEVEL}</div>
+                      </div>
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-lg text-xs font-black border ${progress.skillPoints > 0 ? 'bg-amber-500/20 border-amber-400/60 text-amber-300 animate-pulse' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                      نقاط المهارة: {progress.skillPoints}
+                    </span>
+                  </div>
+                  <div className="h-3 rounded-full bg-[#0f172a] border border-[#334155] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all"
+                      style={{ width: `${Math.min(100, (progress.xp / xpNeed) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1 font-mono">
+                    خبرة: {progress.xp} / {xpNeed}
+                  </div>
+                </div>
+
+                {/* Signature weapon status */}
+                <div className={`p-3.5 rounded-2xl border ${sigUnlocked ? 'bg-emerald-950/40 border-emerald-500/50' : 'bg-[#1e293b] border-[#334155]'}`}>
+                  <div className="flex items-center gap-3">
+                    <div className="text-3xl w-11 h-11 flex items-center justify-center rounded-xl bg-[#0f172a] border border-[#334155]">
+                      ⚔️
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-black text-white text-sm">سلاح حصري: {sigWeapon.nameAr}</div>
+                      <div className="text-[11px] text-slate-400">{sigWeapon.descriptionAr}</div>
+                    </div>
+                    {sigUnlocked ? (
+                      <span className="text-xs font-black text-emerald-400 shrink-0">مفتوح ✅</span>
+                    ) : (
+                      <span className="text-xs font-bold text-amber-300 shrink-0">🔒 مستوى {SIGNATURE_WEAPON_UNLOCK_LEVEL}</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Skill nodes grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {tree.map((node) => {
+                    const rank = getNodeRank(progress.unlockedNodes, node.id);
+                    const maxed = rank >= node.maxRank;
+                    const canUp = !maxed && progress.skillPoints > 0;
+                    const missingReq = node.requires?.some((r) => getNodeRank(progress.unlockedNodes, r) < 1) ?? false;
+                    return (
+                      <button
+                        key={node.id}
+                        onClick={() => handleUpgradeNode(node.id)}
+                        disabled={maxed || !canUp || missingReq}
+                        className={`text-right p-3.5 rounded-2xl border-2 transition cursor-pointer ${
+                          maxed
+                            ? 'border-emerald-500/50 bg-emerald-500/5'
+                            : canUp && !missingReq
+                            ? 'border-[#334155] bg-[#1e293b] hover:border-amber-400/60'
+                            : 'border-[#334155] bg-[#1e293b] opacity-60 cursor-not-allowed'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="text-2xl w-10 h-10 flex items-center justify-center rounded-xl bg-[#0f172a] border border-[#334155] shrink-0">
+                            {node.icon}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-white text-sm">{node.nameAr}</span>
+                              <span className="text-[10px] font-mono text-cyan-300">{rank}/{node.maxRank}</span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">{node.descriptionAr}</div>
+                            {missingReq && !maxed && (
+                              <div className="text-[10px] text-rose-300 mt-1">🔒 يتطلب فتح المهارة السابقة</div>
+                            )}
+                          </div>
+                          {maxed ? (
+                            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : (
+                            <span className={`text-[10px] font-black shrink-0 px-1.5 py-1 rounded-md border ${progress.skillPoints > 0 && !missingReq ? 'text-amber-300 border-amber-400/50 bg-amber-500/10' : 'text-slate-500 border-slate-700'}`}>
+                              +1 مستوى
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-center text-[11px] text-slate-500">
+                  اكسب الخبرة من الجولات (الوقت + الوحوش + المستوى) لترفع مستوى الشخصية وتحصل على نقاط مهارة
+                </div>
+              </div>
+            );
+          })()}
 
           {tab === 'shop' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

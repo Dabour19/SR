@@ -5,6 +5,7 @@
 import {
   CharacterDef,
   CharacterId,
+  CharacterProgress,
   CrateDef,
   CrateId,
   LobbyState,
@@ -16,6 +17,14 @@ import {
   WeaponType,
   CharacterTheme,
 } from '../types';
+import {
+  applySkillBonuses,
+  applyXp,
+  canUpgradeNode,
+  getNodeRank,
+  getSkillTree,
+  xpForNextLevel,
+} from '../game/skillTree';
 
 const STORAGE_KEY = 'survivor_rogue_lobby_v1';
 
@@ -305,7 +314,19 @@ const DEFAULT_STATE: LobbyState = {
   ownedShopItems: [],
   cratesOpened: 0,
   totalSpent: 0,
+  characterProgress: {
+    blade: freshProgress(),
+    mage: freshProgress(),
+    hunter: freshProgress(),
+    paladin: freshProgress(),
+    wraith: freshProgress(),
+    berserker: freshProgress(),
+  },
 };
+
+function freshProgress(): CharacterProgress {
+  return { level: 1, xp: 0, skillPoints: 0, unlockedNodes: [] };
+}
 
 /** Roll a reward from a crate, weighted by crate weights + lucky_charm perk. */
 export function rollCrate(state: LobbyState, crateId: CrateId): CrateReward {
@@ -362,6 +383,13 @@ class LobbyService {
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<LobbyState>;
         this.state = { ...DEFAULT_STATE, ...parsed };
+        this.state.characterProgress = { ...DEFAULT_STATE.characterProgress, ...(this.state.characterProgress || {}) };
+        // Backfill per-character progress for older saves
+        for (const id of ['blade', 'mage', 'hunter', 'paladin', 'wraith', 'berserker'] as CharacterId[]) {
+          if (!this.state.characterProgress[id]) {
+            this.state.characterProgress[id] = freshProgress();
+          }
+        }
         if (!this.state.ownedCharacters.includes('blade')) {
           this.state.ownedCharacters.push('blade');
         }
@@ -469,6 +497,58 @@ class LobbyService {
     return { success: true, reward };
   }
 
+  /* ---------- Character Level / XP / Skill Tree ---------- */
+
+  /** Progress record for a character (always safe). */
+  getProgress(id: CharacterId): CharacterProgress {
+    if (!this.state.characterProgress[id]) {
+      this.state.characterProgress[id] = freshProgress();
+    }
+    return this.state.characterProgress[id];
+  }
+
+  /** XP needed for this character's next level. */
+  getXpRequirement(id: CharacterId): number {
+    return xpForNextLevel(this.getProgress(id).level);
+  }
+
+  /**
+   * Grant XP to a character after a run. Returns summary of gains.
+   * XP scales with survival time, kills and in-run level.
+   */
+  addCharacterXp(id: CharacterId, xp: number): {
+    level: number;
+    levelsGained: number;
+    skillPointsGained: number;
+  } {
+    const p = this.getProgress(id);
+    const res = applyXp(p.level, p.xp, xp);
+    p.level = res.level;
+    p.xp = res.xp;
+    p.skillPoints += res.skillPointsGained;
+    this.commit();
+    return {
+      level: res.level,
+      levelsGained: res.levelsGained,
+      skillPointsGained: res.skillPointsGained,
+    };
+  }
+
+  /** Spend a skill point to raise a node's rank. */
+  upgradeSkillNode(charId: CharacterId, nodeId: string): { success: boolean; error?: string } {
+    const p = this.getProgress(charId);
+    const check = canUpgradeNode(charId, p.unlockedNodes, nodeId, p.skillPoints);
+    if (!check.ok) return { success: false, error: check.error };
+    const node = getSkillTree(charId).find((n) => n.id === nodeId);
+    if (!node) return { success: false, error: 'عقدة غير موجودة' };
+    const rank = getNodeRank(p.unlockedNodes, nodeId);
+    p.unlockedNodes = p.unlockedNodes.filter((entry) => entry.split(':')[0] !== nodeId);
+    p.unlockedNodes.push(`${nodeId}:${rank + 1}`);
+    p.skillPoints -= 1;
+    this.commit();
+    return { success: true };
+  }
+
   /* ---------- Run integration ---------- */
 
   /** Starting stats config for the selected character + owned perks. */
@@ -494,6 +574,8 @@ class LobbyService {
       theme: char.theme,
       applyPerks: (stats: PlayerStats) => {
         ownedPerks.forEach((p) => p.applyToStats?.(stats));
+        // Apply unlocked skill-tree bonuses on top of shop perks
+        applySkillBonuses(char.id, this.getProgress(char.id).unlockedNodes, stats);
       },
     };
   }

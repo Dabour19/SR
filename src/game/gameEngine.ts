@@ -128,6 +128,9 @@ export class GameEngine {
 
   // Lightning VFX storage
   private lightningStrikes: { x: number; y: number; timer: number }[] = [];
+  // Signature weapon VFX storage
+  private frostNovaRings: { x: number; y: number; r: number; maxR: number; timer: number; maxTimer: number; color: string }[] = [];
+  private beamStrikes: { x: number; y: number; angle: number; len: number; timer: number; color: string; width: number }[] = [];
 
   constructor(canvas: HTMLCanvasElement, callbacks: GameEngineCallbacks) {
     this.canvas = canvas;
@@ -304,6 +307,8 @@ export class GameEngine {
     this.triggeredBosses.clear();
     this.activeBoss = null;
     this.lightningStrikes = [];
+    this.frostNovaRings = [];
+    this.beamStrikes = [];
 
     // Starting loadout: per-character signature weapons (matched from Lobby)
     this.weapons.clear();
@@ -322,6 +327,8 @@ export class GameEngine {
   }
 
   public applyUpgrade(itemId: WeaponType | PassiveType, isWeapon: boolean) {
+    // Guard: ignore upgrade selections from a run that already ended/was exited.
+    if (!this.isRunning) return;
     if (isWeapon) {
       const wType = itemId as WeaponType;
       const existing = this.weapons.get(wType);
@@ -469,6 +476,16 @@ export class GameEngine {
     this.lastTime = performance.now();
   }
 
+  /**
+   * Fully stop the current run (player exited to the hub mid-dungeon).
+   * Halts the update loop and blocks any later `resume()` / `applyUpgrade()`
+   * from resurrecting a finished run in the background.
+   */
+  public stopRun() {
+    this.isRunning = false;
+    this.isPaused = false;
+  }
+
   public start() {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
@@ -560,6 +577,18 @@ export class GameEngine {
       if (this.lightningStrikes[i].timer <= 0) {
         this.lightningStrikes.splice(i, 1);
       }
+    }
+
+    // 8b. Update Frost Nova rings & Judgement beams VFX
+    for (let i = this.frostNovaRings.length - 1; i >= 0; i--) {
+      const ring = this.frostNovaRings[i];
+      ring.timer -= dt;
+      ring.r = ring.maxR * (1 - ring.timer / ring.maxTimer);
+      if (ring.timer <= 0) this.frostNovaRings.splice(i, 1);
+    }
+    for (let i = this.beamStrikes.length - 1; i >= 0; i--) {
+      this.beamStrikes[i].timer -= dt;
+      if (this.beamStrikes[i].timer <= 0) this.beamStrikes.splice(i, 1);
     }
 
     // Check 20-minute victory condition
@@ -743,6 +772,72 @@ export class GameEngine {
         this.fireFireWand(fire.level);
       }
     }
+
+    // 6. Blade Tempest (blade exclusive)
+    const tempest = this.weapons.get('blade_tempest');
+    if (tempest) {
+      tempest.timer -= dt;
+      const cd = Math.max(0.9, (2.2 - tempest.level * 0.18) * cdMult);
+      if (tempest.timer <= 0) {
+        tempest.timer = cd;
+        this.fireBladeTempest(tempest.level);
+      }
+    }
+
+    // 7. Frost Nova (mage exclusive)
+    const frost = this.weapons.get('frost_nova');
+    if (frost) {
+      frost.timer -= dt;
+      const cd = Math.max(1.0, (2.4 - frost.level * 0.2) * cdMult);
+      if (frost.timer <= 0) {
+        frost.timer = cd;
+        this.fireFrostNova(frost.level);
+      }
+    }
+
+    // 8. Poison Volley (hunter exclusive)
+    const poison = this.weapons.get('poison_volley');
+    if (poison) {
+      poison.timer -= dt;
+      const cd = Math.max(0.5, (1.4 - poison.level * 0.12) * cdMult);
+      if (poison.timer <= 0) {
+        poison.timer = cd;
+        this.firePoisonVolley(poison.level);
+      }
+    }
+
+    // 9. Judgement Beam (paladin exclusive)
+    const beam = this.weapons.get('judgement_beam');
+    if (beam) {
+      beam.timer -= dt;
+      const cd = Math.max(1.2, (2.6 - beam.level * 0.2) * cdMult);
+      if (beam.timer <= 0) {
+        beam.timer = cd;
+        this.fireJudgementBeam(beam.level);
+      }
+    }
+
+    // 10. Soul Scythe (wraith exclusive)
+    const scythe = this.weapons.get('soul_scythe');
+    if (scythe) {
+      scythe.timer -= dt;
+      const cd = Math.max(0.7, (1.8 - scythe.level * 0.14) * cdMult);
+      if (scythe.timer <= 0) {
+        scythe.timer = cd;
+        this.fireSoulScythe(scythe.level);
+      }
+    }
+
+    // 11. Blood Reaver (berserker exclusive)
+    const reaver = this.weapons.get('blood_reaver');
+    if (reaver) {
+      reaver.timer -= dt;
+      const cd = Math.max(0.6, (1.6 - reaver.level * 0.14) * cdMult);
+      if (reaver.timer <= 0) {
+        reaver.timer = cd;
+        this.pulseBloodReaver(reaver.level);
+      }
+    }
   }
 
   private fireArcaneBurst(level: number) {
@@ -831,6 +926,168 @@ export class GameEngine {
         angle
       );
     }
+  }
+
+  /* ==================== SIGNATURE WEAPONS ==================== */
+
+  private fireBladeTempest(level: number) {
+    const count = level >= 5 ? 12 : Math.min(10, 6 + (level - 1) * 2);
+    const speed = 380;
+    const dmg = (22 + level * 9) * this.stats.damageMultiplier;
+    const pierce = level >= 4 ? 3 : 2;
+    const baseAngle = Math.random() * Math.PI * 2;
+
+    for (let i = 0; i < count; i++) {
+      const angle = baseAngle + (i * Math.PI * 2) / count;
+      this.pool.spawnProjectile(
+        'blade_tempest',
+        this.player.x,
+        this.player.y,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        dmg,
+        7,
+        0.8,
+        '#67e8f9',
+        pierce,
+        angle
+      );
+    }
+    soundEngine.playBladeHit();
+  }
+
+  private fireFrostNova(level: number) {
+    soundEngine.playExplosion();
+    const radius = 140 + level * 28;
+    const dmg = (30 + level * 13) * this.stats.damageMultiplier;
+    this.frostNovaRings.push({ x: this.player.x, y: this.player.y, r: 10, maxR: radius, timer: 0.5, maxTimer: 0.5, color: '#7dd3fc' });
+
+    const nearby = this.queryEnemies(this.player.x, this.player.y, radius).slice();
+    for (const enemy of nearby) {
+      this.damageEnemy(enemy, dmg, false);
+      this.pool.spawnParticles(enemy.x, enemy.y, '#7dd3fc', 3, 60);
+      // Knockback: push enemies away from the blast center
+      const dx = enemy.x - this.player.x;
+      const dy = enemy.y - this.player.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const push = 900;
+      enemy.vx = (dx / d) * push;
+      enemy.vy = (dy / d) * push;
+    }
+    this.addScreenShake(5);
+  }
+
+  private firePoisonVolley(level: number) {
+    const closest = this.findClosestEnemy(this.player.x, this.player.y, 700);
+    if (!closest) return;
+
+    soundEngine.playArcaneShoot();
+    const count = level >= 5 ? 9 : level >= 4 ? 7 : level >= 2 ? 5 : 3;
+    const baseAngle = Math.atan2(closest.y - this.player.y, closest.x - this.player.x);
+    const speed = 400;
+    const dmg = (20 + level * 8) * this.stats.damageMultiplier;
+    const pierce = level >= 3 ? 4 : 3;
+    const spread = 0.16;
+
+    for (let i = 0; i < count; i++) {
+      const angle = baseAngle + (i - (count - 1) / 2) * spread;
+      this.pool.spawnProjectile(
+        'poison_volley',
+        this.player.x,
+        this.player.y,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        dmg,
+        6,
+        1.4,
+        '#84cc16',
+        pierce,
+        angle
+      );
+    }
+  }
+
+  private fireJudgementBeam(level: number) {
+    const closest = this.findClosestEnemy(this.player.x, this.player.y, 800);
+    const baseAngle = closest
+      ? Math.atan2(closest.y - this.player.y, closest.x - this.player.x)
+      : 0;
+    const beamCount = level >= 5 ? 3 : level >= 3 ? 2 : 1;
+    const len = 850;
+    const width = level >= 4 ? 34 : 22;
+    const dmg = (45 + level * 18) * this.stats.damageMultiplier;
+
+    soundEngine.playLightning();
+    this.addScreenShake(6);
+
+    const hitIds = new Set<number>();
+    for (let b = 0; b < beamCount; b++) {
+      const angle = baseAngle + (b * Math.PI * 2) / beamCount;
+      this.beamStrikes.push({ x: this.player.x, y: this.player.y, angle, len, timer: 0.28, color: '#fde047', width });
+
+      // Damage everything along the corridor (sampled queries, deduped)
+      const steps = 6;
+      for (let s = 1; s <= steps; s++) {
+        const sx = this.player.x + Math.cos(angle) * (len / steps) * s;
+        const sy = this.player.y + Math.sin(angle) * (len / steps) * s;
+        const nearby = this.queryEnemies(sx, sy, width);
+        for (const enemy of nearby) {
+          if (hitIds.has(enemy.id)) continue;
+          hitIds.add(enemy.id);
+          this.damageEnemy(enemy, dmg, false);
+          this.pool.spawnParticles(enemy.x, enemy.y, '#fde047', 3, 70);
+        }
+      }
+    }
+  }
+
+  private fireSoulScythe(level: number) {
+    soundEngine.playArcaneShoot();
+    const count = level >= 5 ? 4 : level >= 4 ? 3 : level >= 2 ? 2 : 1;
+    const closest = this.findClosestEnemy(this.player.x, this.player.y, 700);
+    const baseAngle = closest
+      ? Math.atan2(closest.y - this.player.y, closest.x - this.player.x)
+      : 0;
+    const speed = 300;
+    const dmg = (34 + level * 14) * this.stats.damageMultiplier;
+    const pierce = level >= 4 ? 6 : 4;
+
+    for (let i = 0; i < count; i++) {
+      const angle = baseAngle + (i - (count - 1) / 2) * 0.5;
+      this.pool.spawnProjectile(
+        'soul_scythe',
+        this.player.x,
+        this.player.y,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        dmg,
+        10,
+        1.6,
+        '#c084fc',
+        pierce,
+        angle
+      );
+    }
+  }
+
+  private pulseBloodReaver(level: number) {
+    const radius = 110 + level * 20;
+    const dmg = (26 + level * 11) * this.stats.damageMultiplier;
+    const healPerKill = level >= 5 ? 10 : level >= 4 ? 5 : level >= 2 ? 2 : 0;
+
+    this.frostNovaRings.push({ x: this.player.x, y: this.player.y, r: 8, maxR: radius, timer: 0.35, maxTimer: 0.35, color: '#ef4444' });
+
+    const nearby = this.queryEnemies(this.player.x, this.player.y, radius).slice();
+    for (const enemy of nearby) {
+      this.damageEnemy(enemy, dmg, false);
+      this.pool.spawnParticles(enemy.x, enemy.y, '#ef4444', 2, 50);
+      // Blood frenzy: heal on kill
+      if (healPerKill > 0 && !enemy.active && enemy.hp <= 0) {
+        this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + healPerKill);
+        this.pool.spawnParticles(this.player.x, this.player.y, '#f87171', 4, 80);
+      }
+    }
+    if (nearby.length > 0) soundEngine.playEnemyHit();
   }
 
   private updateProjectiles(dt: number) {
@@ -1664,6 +1921,37 @@ export class GameEngine {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 1.5;
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // 8b. Draw Frost Nova / Blood Reaver rings & Judgement beams
+    for (const ring of this.frostNovaRings) {
+      if (!this.isOnScreen(ring.x, ring.y, ring.r + 20)) continue;
+      const alpha = Math.max(0, ring.timer / ring.maxTimer);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = ring.color;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(ring.x, ring.y, ring.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = alpha * 0.18;
+      ctx.fillStyle = ring.color;
+      ctx.fill();
+      ctx.restore();
+    }
+    for (const beam of this.beamStrikes) {
+      if (!this.isOnScreen(beam.x, beam.y, beam.len + 20)) continue;
+      const alpha = Math.max(0, beam.timer / 0.28);
+      ctx.save();
+      ctx.translate(beam.x, beam.y);
+      ctx.rotate(beam.angle);
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.fillStyle = beam.color;
+      ctx.fillRect(0, -beam.width / 2, beam.len, beam.width);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, -beam.width / 6, beam.len, beam.width / 3);
       ctx.restore();
     }
 

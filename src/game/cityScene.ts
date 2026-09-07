@@ -6,8 +6,8 @@
  * Every building corresponds to a lobby station (shop, characters, ...).
  */
 
-export const WORLD_W = 2000;
-export const WORLD_H = 800;
+export const WORLD_W = 3600;
+export const WORLD_H = 900;
 /** Everything above this y is sky / distant skyline. */
 export const HORIZON_Y = 170;
 
@@ -20,21 +20,49 @@ export type HubStationId =
   | 'profile'
   | 'help'
   | 'start'
-  | 'dungeon1'
-  | 'dungeon2'
-  | 'dungeon3';
+  /* random dungeon gates get generated ids like 'dg3' */
+  | (string & {});
 
 export type BuildingKind = 'house' | 'tower' | 'gate' | 'board' | 'kiosk' | 'dungeon';
 
 /** Outside the city (x > CITY_EDGE) lies the open wilderness with dungeon gates. */
 export const CITY_EDGE = 1240;
 
-/** Dungeon difficulty (multiplier) per station id. */
-export const DUNGEON_DIFFICULTY: Partial<Record<HubStationId, number>> = {
-  dungeon1: 1,
-  dungeon2: 2,
-  dungeon3: 3,
-};
+/* ==================== RANDOM DUNGEON GATES ====================
+ * Dungeons are NOT fixed buildings anymore. Each session, a set of random
+ * portals spawns across the open wilderness. Every portal gets a random tier;
+ * the tier decides its color, difficulty multiplier and required level.
+ */
+
+export interface DungeonTier {
+  tier: number;
+  nameAr: string;
+  emoji: string;
+  /** Portal color — the visual cue for power. */
+  color: string;
+  /** Combat difficulty multiplier passed to the battle scene. */
+  difficulty: number;
+  /** Minimum character level to enter. */
+  minLevel: number;
+  /** Relative spawn weight (lower tiers more common). */
+  weight: number;
+}
+
+export const DUNGEON_TIERS: DungeonTier[] = [
+  { tier: 1, nameAr: 'بوابة سهلة',    emoji: '🌿', color: '#a3e635', difficulty: 1,    minLevel: 1,  weight: 30 },
+  { tier: 2, nameAr: 'بوابة قريبة',  emoji: '💧', color: '#22d3ee', difficulty: 1.6,  minLevel: 3,  weight: 24 },
+  { tier: 3, nameAr: 'بوابة خطرة',   emoji: '🧟', color: '#a78bfa', difficulty: 2.4,  minLevel: 6,  weight: 18 },
+  { tier: 4, nameAr: 'بوابة نادرة',  emoji: '👹', color: '#f472b6', difficulty: 3.2,  minLevel: 10, weight: 12 },
+  { tier: 5, nameAr: 'بوابة ملحمية', emoji: '🔥', color: '#fb923c', difficulty: 4.2,  minLevel: 14, weight: 8 },
+  { tier: 6, nameAr: 'بوابة أسطورية', emoji: '🐉', color: '#ef4444', difficulty: 6,   minLevel: 18, weight: 4 },
+];
+
+function pickWeightedTier(): DungeonTier {
+  const total = DUNGEON_TIERS.reduce((s, t) => s + t.weight, 0);
+  let r = Math.random() * total;
+  for (const t of DUNGEON_TIERS) { r -= t.weight; if (r <= 0) return t; }
+  return DUNGEON_TIERS[0];
+}
 
 export interface Building {
   id: HubStationId;
@@ -55,6 +83,45 @@ export interface Building {
   range: number;
 }
 
+/** Metadata for a generated gate id (e.g. 'dg4'), or null if not a gate. */
+export function getDungeonGate(id: HubStationId): (Building & { tier: DungeonTier }) | null {
+  return DUNGEONS.find((d) => d.id === id) ?? null;
+}
+
+/** All generated random gates (with their tier attached). */
+export const DUNGEONS: Array<Building & { tier: DungeonTier }> = [];
+
+/** Generate a fresh set of random dungeon portals in the wilderness. */
+export function regenerateDungeons(count = 10) {
+  DUNGEONS.length = 0;
+  const placed: { x: number; y: number }[] = [];
+  let guard = 0;
+  while (DUNGEONS.length < count && guard++ < 400) {
+    const x = CITY_EDGE + 180 + Math.random() * (WORLD_W - CITY_EDGE - 340);
+    const y = HORIZON_Y + 130 + Math.random() * (WORLD_H - HORIZON_Y - 190);
+    if (placed.some((p) => Math.hypot(p.x - x, (p.y - y) * 1.4) < 220)) continue;
+    const tier = pickWeightedTier();
+    DUNGEONS.push({
+      id: `dg${DUNGEONS.length + 1}`,
+      labelAr: `${tier.nameAr} — مستوى ${tier.tier}`,
+      actionAr: `${tier.emoji} ادخل الدنجن (قوة ${tier.tier})`,
+      emoji: tier.emoji,
+      color: tier.color,
+      kind: 'dungeon',
+      x: Math.round(x),
+      y: Math.round(y),
+      w: 150,
+      h: 56,
+      wallH: 100,
+      range: 80,
+      tier,
+    });
+    placed.push({ x, y });
+  }
+}
+
+regenerateDungeons();
+
 export interface Fountain { x: number; y: number; r: number }
 export interface Lamp { x: number; y: number }
 export interface Tree { x: number; y: number; s: number }
@@ -70,12 +137,20 @@ export const BUILDINGS: Building[] = [
   { id: 'leaderboard', labelAr: 'برج الصدارة', actionAr: 'لوحة الصدارة', emoji: '🏆', color: '#fbbf24', kind: 'tower', x: 600, y: 300, w: 130, h: 60, wallH: 210, range: 70 },
   { id: 'profile', labelAr: 'الملف الشخصي', actionAr: 'حسابي', emoji: '🪪', color: '#60a5fa', kind: 'kiosk', x: 400, y: 320, w: 70, h: 36, wallH: 56, range: 55 },
   { id: 'help', labelAr: 'لوحة الإعلانات', actionAr: 'كيف تلعب؟', emoji: '📜', color: '#fb923c', kind: 'board', x: 800, y: 320, w: 80, h: 22, wallH: 62, range: 55 },
-  { id: 'start', labelAr: 'بوابة المعركة', actionAr: '⚔️ ابدأ المعركة', emoji: '⚔️', color: '#f43f5e', kind: 'gate', x: 600, y: 752, w: 220, h: 30, wallH: 120, range: 80 },
-  /* --- Wilderness (outside the city walls): dungeon gates --- */
-  { id: 'dungeon1', labelAr: 'دنجن السهول (مبتدئ)', actionAr: '🌿 ادخل الدنجن (المستوى 1)', emoji: '🌿', color: '#a3e635', kind: 'dungeon', x: 1420, y: 420, w: 150, h: 56, wallH: 100, range: 78 },
-  { id: 'dungeon2', labelAr: 'مقبرة الرماد (متوسط)', actionAr: '💀 ادخل الدنجن (المستوى 2)', emoji: '💀', color: '#a78bfa', kind: 'dungeon', x: 1700, y: 660, w: 160, h: 58, wallH: 110, range: 78 },
-  { id: 'dungeon3', labelAr: 'هاوية الجحيم (أسطوري)', actionAr: '🔥 ادخل الدنجن (المستوى 3)', emoji: '🔥', color: '#f97316', kind: 'dungeon', x: 1840, y: 300, w: 170, h: 60, wallH: 120, range: 78 },
+  /* NOTE: the old battle gate ('start') and the fixed dungeon gates were
+     removed — the whole map is now an open world and dungeon portals spawn
+     randomly in the wilderness (see DUNGEONS / regenerateDungeons). */
 ];
+
+  /** City buildings + the currently generated random dungeon gates. */
+export const ALL_BUILDINGS: Building[] = [...BUILDINGS, ...DUNGEONS];
+
+/** City buildings + the currently generated random dungeon gates. */
+function syncAllBuildings() {
+  ALL_BUILDINGS.length = 0;
+  ALL_BUILDINGS.push(...BUILDINGS, ...DUNGEONS);
+}
+syncAllBuildings();
 
 export const LAMPS: Lamp[] = [
   { x: 470, y: 430 }, { x: 730, y: 430 },
@@ -89,9 +164,12 @@ export const TREES: Tree[] = [
   { x: 90, y: 770, s: 1 }, { x: 1110, y: 770, s: 1 },
   { x: 330, y: 250, s: 0.8 }, { x: 870, y: 250, s: 0.8 },
   { x: 440, y: 760, s: 0.85 }, { x: 760, y: 760, s: 0.85 },
-  /* wilderness trees & dead wood */
-  { x: 1330, y: 300, s: 1.2 }, { x: 1560, y: 560, s: 1.1 }, { x: 1930, y: 470, s: 1.3 },
-  { x: 1480, y: 740, s: 1 }, { x: 1900, y: 640, s: 1.15 }, { x: 1650, y: 260, s: 0.9 },
+  /* wilderness trees & dead wood — scattered across the whole open world */
+  ...Array.from({ length: 40 }, (_, i) => ({
+    x: CITY_EDGE + 120 + ((i * 811) % (WORLD_W - CITY_EDGE - 240)),
+    y: HORIZON_Y + 90 + ((i * 547) % (WORLD_H - HORIZON_Y - 140)),
+    s: 0.8 + ((i * 13) % 6) / 10,
+  })),
 ];
 
 /** Dead wilderness trees get a spooky look. */
@@ -106,7 +184,7 @@ export const BENCHES: Bench[] = [
 export const PLAYER_SPAWN = { x: 600, y: 610 };
 
 export function getBuilding(id: HubStationId): Building {
-  return BUILDINGS.find((b) => b.id === id) || BUILDINGS[0];
+  return BUILDINGS.find((b) => b.id === id) || ALL_BUILDINGS.find((b) => b.id === id) || BUILDINGS[0];
 }
 
 /** Rect used for player collision (feet point). */
@@ -132,7 +210,7 @@ interface Rect { x: number; y: number; w: number; h: number }
 
 function collectSolids(): Rect[] {
   const solids: Rect[] = [];
-  for (const b of BUILDINGS) {
+  for (const b of ALL_BUILDINGS) {
     const r = buildingRect(b);
     if (r) solids.push(r);
     else solids.push(...gatePillarRects(b));
@@ -140,9 +218,7 @@ function collectSolids(): Rect[] {
   for (const t of TREES) solids.push({ x: t.x - 10 * t.s, y: t.y - 10, w: 20 * t.s, h: 12 });
   for (const l of LAMPS) solids.push({ x: l.x - 5, y: l.y - 6, w: 10, h: 8 });
   for (const bn of BENCHES) solids.push({ x: bn.x - 22, y: bn.y - 8, w: 44, h: 10 });
-  // City wall at the wilderness border (leaves the road opening at y 470-610)
-  solids.push({ x: CITY_EDGE - 12, y: HORIZON_Y + 14, w: 24, h: 456 - HORIZON_Y - 14 });
-  solids.push({ x: CITY_EDGE - 12, y: 624, w: 24, h: WORLD_H - 624 });
+  // The old city wall is gone — the map is one open world now.
   return solids;
 }
 
@@ -176,7 +252,7 @@ export function blocked(px: number, py: number): boolean {
 export function nearestBuilding(px: number, py: number): Building | null {
   let best: Building | null = null;
   let bestD = Infinity;
-  for (const b of BUILDINGS) {
+  for (const b of ALL_BUILDINGS) {
     const d = Math.hypot(b.x - px, (b.y + 18 - py) * 1.1);
     if (d < bestD && d <= b.range) { bestD = d; best = b; }
   }
@@ -185,7 +261,7 @@ export function nearestBuilding(px: number, py: number): Building | null {
 
 /** Hit-test a world point against a building's drawn body (walls + roof). */
 export function buildingAtPoint(px: number, py: number): Building | null {
-  for (const b of BUILDINGS) {
+  for (const b of ALL_BUILDINGS) {
     const top = b.y - b.h - b.wallH - (b.kind === 'house' ? 60 : b.kind === 'tower' ? 50 : 10);
     if (px >= b.x - b.w / 2 - 8 && px <= b.x + b.w / 2 + 8 && py >= top && py <= b.y + 4) return b;
   }

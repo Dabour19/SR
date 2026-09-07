@@ -7,7 +7,14 @@ export type WeaponType =
   | 'arcane_burst'
   | 'holy_aura'
   | 'lightning_strike'
-  | 'fire_wand';
+  | 'fire_wand'
+  // Exclusive signature weapons (one per character, unlocked via skill tree level)
+  | 'blade_tempest'
+  | 'frost_nova'
+  | 'poison_volley'
+  | 'judgement_beam'
+  | 'soul_scythe'
+  | 'blood_reaver';
 
 export type PassiveType =
   | 'magnet'
@@ -30,6 +37,10 @@ export interface WeaponDef {
   baseCooldown: number;
   maxLevel: number;
   unlockedByDefault: boolean;
+  /** Only offered to this character (signature weapon). Omitted = everyone. */
+  exclusiveTo?: CharacterId;
+  /** Character level required before it can appear as an upgrade. */
+  unlockLevel?: number;
 }
 
 export interface PassiveDef {
@@ -374,6 +385,13 @@ export interface TeamDoc {
   matchStartedAt?: number; // set by host when starting a co-op match
 }
 
+export interface CharacterProgress {
+  level: number;
+  xp: number; // xp earned toward next level
+  skillPoints: number; // 1 point per character level
+  unlockedNodes: string[]; // skill tree node ids ("nodeId:rank")
+}
+
 export interface LobbyState {
   coins: number;
   ownedCharacters: CharacterId[];
@@ -381,4 +399,6 @@ export interface LobbyState {
   ownedShopItems: ShopItemId[]; // permanent perks owned
   cratesOpened: number;
   totalSpent: number;
+  /** Per-character level / XP / skill-tree state. */
+  characterProgress: Record<CharacterId, CharacterProgress>;
 }
