@@ -157,26 +157,48 @@ const GATES_PER_ZONE = 2;
 /** Zones around the player's level that may spawn gates (±1 zone). */
 const ZONE_REACH = 1;
 
-function spawnGateInZone(zone: DungeonZone, now: number) {
+/* Deterministic PRNG so every device in the same team generates IDENTICAL
+   dungeon gates (same ids, positions and levels) — co-op members must all
+   see and enter the same portals. */
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+function mulberry32(a: number): () => number {
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+/** Last seed used for gate generation (team code or null = solo random). */
+let lastGateSeed: string | null = null;
+
+function spawnGateInZone(zone: DungeonZone, now: number, seed?: number) {
+  /* With a seed all rolls are deterministic; without it they are random. */
+  const rng = seed !== undefined ? mulberry32(seed) : Math.random;
   const tier = tierForLevel(zone.minLevel);
-  const lvl = zone.minLevel + Math.floor(Math.random() * (zone.maxLevel - zone.minLevel + 1));
+  const lvl = zone.minLevel + Math.floor(rng() * (zone.maxLevel - zone.minLevel + 1));
   /* Difficulty grows with the dungeon level itself. */
   const difficulty = +(1 + (lvl - 1) * 0.28).toFixed(2);
   DUNGEONS.push({
-    id: `dg${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`,
+    id: seed !== undefined ? `dg${zone.index}_${hashStr(`${seed}`) % 1e4}` : `dg${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`,
     labelAr: `${tier.nameAr} — مستوى ${lvl}`,
     actionAr: `${tier.emoji} ادخل الدنجن (مستوى ${lvl} • قوة ${difficulty})`,
     emoji: tier.emoji,
     color: tier.color,
     kind: 'dungeon',
-    x: Math.round(zone.x0 + 140 + Math.random() * (ZONE_W - 280)),
-    y: Math.round(HORIZON_Y + 130 + Math.random() * (WORLD_H - HORIZON_Y - 190)),
+    x: Math.round(zone.x0 + 140 + rng() * (ZONE_W - 280)),
+    y: Math.round(HORIZON_Y + 130 + rng() * (WORLD_H - HORIZON_Y - 190)),
     w: 150,
     h: 56,
     wallH: 100,
     range: 80,
     levelReq: zone.minLevel,
-    expiresAt: now + GATE_LIFETIME_MS(),
+    /* Team gates never expire — all members must see the same set. */
+    expiresAt: seed !== undefined ? Infinity : now + GATE_LIFETIME_MS(),
     tier: { ...tier, minLevel: zone.minLevel, difficulty },
   });
 }
@@ -186,20 +208,44 @@ function spawnGateInZone(zone: DungeonZone, now: number) {
  * inside the zones matching the player's level (and the neighbouring zones).
  * Each portal lives for a limited time, then disappears.
  */
-export function updateDungeonSpawns(playerLevel: number, now = Date.now()) {
+/**
+ * Called periodically: removes expired portals and randomly spawns new ones
+ * inside the zones matching the player's level (and the neighbouring zones).
+ * When `teamCode` is given, gate generation is DETERMINISTIC per team code —
+ * every team member generates the exact same gates and can enter the same
+ * dungeon together. Team gates never vanish.
+ */
+export function updateDungeonSpawns(playerLevel: number, now = Date.now(), teamCode?: string | null) {
   /* 1) vanish expired gates */
   for (let i = DUNGEONS.length - 1; i >= 0; i--) {
     if ((DUNGEONS[i].expiresAt ?? Infinity) <= now) DUNGEONS.splice(i, 1);
   }
 
-  /* 2) spawn randomly in eligible zones (player's zone ± reach) */
-  const myZone = zoneForLevel(playerLevel).index;
-  for (let zi = Math.max(0, myZone - ZONE_REACH); zi <= Math.min(ZONE_COUNT - 1, myZone + ZONE_REACH); zi++) {
-    const zone = DUNGEON_ZONES[zi];
-    const active = DUNGEONS.filter((d) => d.x >= zone.x0 && d.x < zone.x1).length;
-    if (active >= GATES_PER_ZONE) continue;
-    /* random chance so portals appear at unpredictable moments */
-    if (Math.random() < 0.45) spawnGateInZone(zone, now);
+  /* Regenerate from scratch when the seed (team) changes. */
+  if ((teamCode ?? null) !== lastGateSeed) {
+    DUNGEONS.length = 0;
+    lastGateSeed = teamCode ?? null;
+  }
+
+  if (teamCode) {
+    /* 2a) co-op: deterministic gates in ALL zones, identical on every device */
+    for (const zone of DUNGEON_ZONES) {
+      for (let k = 0; k < GATES_PER_ZONE; k++) {
+        const seed = hashStr(`${teamCode}:${zone.index}:${k}`);
+        const id = `dg${zone.index}_${hashStr(`${seed}`) % 1e4}`;
+        if (!DUNGEONS.some((d) => d.id === id)) spawnGateInZone(zone, now, seed);
+      }
+    }
+  } else {
+    /* 2b) solo: random gates near the player's level zones */
+    const myZone = zoneForLevel(playerLevel).index;
+    for (let zi = Math.max(0, myZone - ZONE_REACH); zi <= Math.min(ZONE_COUNT - 1, myZone + ZONE_REACH); zi++) {
+      const zone = DUNGEON_ZONES[zi];
+      const active = DUNGEONS.filter((d) => d.x >= zone.x0 && d.x < zone.x1).length;
+      if (active >= GATES_PER_ZONE) continue;
+      /* random chance so portals appear at unpredictable moments */
+      if (Math.random() < 0.45) spawnGateInZone(zone, now);
+    }
   }
   syncAllBuildings();
 }

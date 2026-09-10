@@ -1,13 +1,11 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import {
   Coins,
-  Store,
   Users,
   Package,
   Check,
   Lock,
   Sparkles,
-  Play,
   User,
   UserPlus,
   Search,
@@ -29,7 +27,7 @@ import {
   RARITY_CONFIG,
   getCharacter,
 } from '../services/lobbyService';
-import type { CrateId, LobbyState, FriendDoc, TeamDoc } from '../types';
+import type { CrateId, LobbyState, FriendDoc } from '../types';
 import { LobbyHub, type HubStationId } from './LobbyHub';
 import { CrateOpeningModal } from './CrateOpeningModal';
 import { HelpModal } from './HelpModal';
@@ -54,7 +52,6 @@ import { getDungeonGate, updateDungeonSpawns } from '../game/cityScene';
 type Tab = 'hub' | 'home' | 'characters' | 'skills' | 'shop' | 'crates' | 'friends';
 
 interface LobbyProps {
-  onBack: () => void;
   onStartGame: (difficulty?: number) => void;
   onOpenAuth: () => void;
   onOpenLeaderboard: () => void;
@@ -118,29 +115,36 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
     showToast(res.success ? 'تم الانضمام للفريق ✅' : res.error || 'فشل الانضمام');
     if (res.success) setJoinCode('');
   };
-  const handleTeamStart = async () => {
+  const handleTeamStart = async (overrideDifficulty?: number) => {
     if (!team) return;
-    if (!team.members.every((m) => m.ready || m.isHost)) {
+    if (overrideDifficulty === undefined && !team.members.every((m) => m.ready || m.isHost)) {
       showToast('في انتظار جهوزية جميع الأعضاء ⏳');
       return;
     }
-    const res = await friendsService.startMatch();
+    /* The host's dungeon difficulty is published with the match so every
+       member launches the SAME dungeon (same difficulty) together. */
+    const lvl = lobbyService.getProgress(state.selectedCharacter).level;
+    const difficulty = overrideDifficulty ?? +(1 + (lvl - 1) * 0.28).toFixed(2);
+    const res = await friendsService.startMatch(difficulty);
     showToast(res.success ? 'بدأت المعركة التعاونية! ⚔️' : res.error || 'فشل بدء المعركة');
     if (res.success) {
-      /* Co-op runs use the same difficulty formula as the dungeon gates,
-         derived from the selected character's level — entering a dungeon
-         without a portal stays consistent with gated entries. */
-      const lvl = lobbyService.getProgress(state.selectedCharacter).level;
-      onStartGame(+(1 + (lvl - 1) * 0.28).toFixed(2));
+      onStartGame(difficulty);
     }
   };
 
-  /* Co-op match start watcher: all members auto-launch when the host starts. */
+  /* Co-op match start watcher: all members auto-launch when the host starts,
+     using the host's shared dungeon difficulty so everyone enters the SAME
+     dungeon (not one scaled to each member's own level).
+     The 20s recency guard prevents a stale matchStartedAt from re-launching
+     a member who opens the lobby long after a previous match started. */
   useEffect(() => {
-    if (team?.matchStartedAt) {
+    if (team?.matchStartedAt && Date.now() - team.matchStartedAt < 20000) {
       friendsService.clearMatchStart();
       const lvl = lobbyService.getProgress(state.selectedCharacter).level;
-      onStartGame(+(1 + (lvl - 1) * 0.28).toFixed(2));
+      const diff = typeof team.matchDifficulty === 'number' && team.matchDifficulty > 0
+        ? team.matchDifficulty
+        : +(1 + (lvl - 1) * 0.28).toFixed(2);
+      onStartGame(diff);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [team?.matchStartedAt]);
@@ -160,10 +164,12 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
   const tier = determineTier(user.rankScore);
   const selectedChar = getCharacter(state.selectedCharacter);
 
-  /* Seed/refresh dungeon portals for the selected character's level zones. */
+  /* Seed/refresh dungeon portals for the selected character's level zones.
+     In a team, generation is seeded by the team code so every member sees
+     and enters the SAME dungeons. */
   useEffect(() => {
-    updateDungeonSpawns(lobbyService.getProgress(state.selectedCharacter).level);
-  }, [state.selectedCharacter]);
+    updateDungeonSpawns(lobbyService.getProgress(state.selectedCharacter).level, Date.now(), team?.code ?? null);
+  }, [state.selectedCharacter, team?.code]);
 
 
   const showToast = (msg: string) => {
@@ -171,7 +177,7 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
     window.setTimeout(() => setToast(null), 2200);
   };
 
-  const handleBuyCharacter = (id: (typeof CHARACTERS)[number]['id'], price: number) => {
+  const handleBuyCharacter = (id: (typeof CHARACTERS)[number]['id']) => {
     if (state.ownedCharacters.includes(id)) {
       lobbyService.selectCharacter(id);
       // Keep profile avatar in sync with the selected character (lobby = in-game look)
@@ -222,6 +228,16 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
       const charLevel = lobbyService.getProgress(state.selectedCharacter).level;
       if (charLevel < required) {
         showToast(`هذا الدنجن يتطلب مستوى الشخصية ${required} (مستواك: ${charLevel}) 🔒`);
+        return;
+      }
+      /* In a team, the chosen gate becomes the TEAM dungeon: the host publishes
+         its difficulty to the team doc and all members auto-launch together. */
+      if (team) {
+        if (!isHost) {
+          showToast('فقط قائد الفريق يختار الدنجن — انتظر بدء المعركة ⏳');
+          return;
+        }
+        handleTeamStart(gate.tier.difficulty);
         return;
       }
       onStartGame(gate.tier.difficulty);
@@ -641,7 +657,7 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
                       )}
                       {isHost && (
                         <button
-                          onClick={handleTeamStart}
+                          onClick={() => handleTeamStart()}
                           disabled={team.members.length < 1}
                           className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-900 text-xs font-black transition cursor-pointer"
                         >
@@ -665,7 +681,7 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
                 return (
                   <button
                     key={c.id}
-                    onClick={() => handleBuyCharacter(c.id, c.price)}
+                    onClick={() => handleBuyCharacter(c.id)}
                     disabled={selected}
                     className={`text-right p-4 rounded-2xl border-2 transition cursor-pointer relative overflow-hidden ${
                       selected

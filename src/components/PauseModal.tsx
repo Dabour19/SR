@@ -1,6 +1,5 @@
 import React from 'react';
 import { Play, RotateCcw, Home, Volume2, VolumeX, Smartphone, Monitor, Sliders } from 'lucide-react';
-import { soundEngine } from '../audio/soundEngine';
 
 interface PauseModalProps {
   onResume: () => void;

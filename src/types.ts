@@ -383,6 +383,7 @@ export interface TeamDoc {
   members: TeamMember[];
   createdAt: number;
   matchStartedAt?: number; // set by host when starting a co-op match
+  matchDifficulty?: number; // shared dungeon difficulty so the whole team enters the SAME dungeon
 }
 
 export interface CharacterProgress {

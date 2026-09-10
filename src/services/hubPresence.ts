@@ -12,7 +12,6 @@ import {
 } from 'firebase/firestore';
 import { auth, db, loginAnonymously } from './firebase';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
-import { playerAuthService } from './playerAuthService';
 import type { CharacterId, CharacterTheme } from '../types';
 
 export interface HubPlayer {

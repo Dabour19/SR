@@ -1,13 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { soundEngine } from './audio/soundEngine';
 import { GameEngine } from './game/gameEngine';
 import {
-  ActivePassive,
-  ActiveWeapon,
   EnemyEntity,
   GameRunStats,
   PassiveType,
@@ -19,14 +13,12 @@ import { PauseModal } from './components/PauseModal';
 import { GameOverModal } from './components/GameOverModal';
 import { AuthModal } from './components/AuthModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
-import { playerAuthService } from './services/playerAuthService';
 import { lobbyService } from './services/lobbyService';
 import { runPresence } from './services/runPresence';
 import { friendsService } from './services/friendsService';
 import { Lobby } from './components/Lobby';
 import { VirtualJoystick } from './components/VirtualJoystick';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { PWAInstallButton } from './components/PWAInstallButton';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -58,10 +50,6 @@ export default function App() {
     activeBoss: null as EnemyEntity | null,
   });
 
-  // Local storage high scores
-  const [bestTime, setBestTime] = useState(0);
-  const [bestKills, setBestKills] = useState(0);
-
   // Joystick Opacity (متوازنة وخفيفة بنسبة 40% كافتراضي مع حفظ التفضيل)
   const [joystickOpacity, setJoystickOpacity] = useState<number>(() => {
     try {
@@ -83,17 +71,6 @@ export default function App() {
       localStorage.setItem('survivor_joystick_opacity', clamped.toString());
     } catch {}
   }, []);
-
-  useEffect(() => {
-    try {
-      const savedTime = parseInt(localStorage.getItem('survivor_best_time') || '0', 10);
-      const savedKills = parseInt(localStorage.getItem('survivor_best_kills') || '0', 10);
-      setBestTime(savedTime);
-      setBestKills(savedKills);
-    } catch {}
-  }, []);
-
-  // Format MM:SS (kept for future use in menus)
 
   // Level Up Callback
   const handleLevelUp = useCallback((lvl: number) => {
@@ -119,8 +96,8 @@ export default function App() {
     try {
       const savedTime = parseInt(localStorage.getItem('survivor_best_time') || '0', 10);
       const savedKills = parseInt(localStorage.getItem('survivor_best_kills') || '0', 10);
-      setBestTime(Math.max(savedTime, stats.timeSurvived));
-      setBestKills(Math.max(savedKills, stats.enemiesKilled));
+      localStorage.setItem('survivor_best_time', Math.max(savedTime, stats.timeSurvived).toString());
+      localStorage.setItem('survivor_best_kills', Math.max(savedKills, stats.enemiesKilled).toString());
     } catch {}
   }, []);
 
@@ -155,18 +132,6 @@ export default function App() {
       engine.destroy();
     };
   }, [handleGameOver, handleLevelUp, handleStatsUpdate]);
-
-  // Exit lobby back to main menu (زر الرجوع)
-  const handleExitToMenu = () => {
-    runPresence.leave();
-    soundEngine.setMuted(true);
-    engineRef.current?.stopRun();
-    setInGame(false);
-    setIsPaused(false);
-    setGameOverStats(null);
-    setCoinsEarned(null);
-    setLevelUpLevel(null);
-  };
 
   /**
    * Quit an active run back to the hub. Stops the engine loop entirely so no
@@ -279,7 +244,6 @@ export default function App() {
       {/* Main Menu = Lobby (profile / shop / characters / friends) */}
       {!inGame && (
         <Lobby
-          onBack={handleExitToMenu}
           onStartGame={handleStartGame}
           onOpenAuth={() => setShowAuthModal(true)}
           onOpenLeaderboard={() => setShowLeaderboardModal(true)}

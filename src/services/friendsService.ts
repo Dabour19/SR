@@ -13,10 +13,12 @@ import {
   query,
   where,
   onSnapshot,
-  serverTimestamp,
+  runTransaction,
+  arrayUnion,
 } from 'firebase/firestore';
+import { connectivityService } from './connectivityService';
 import { auth, db, loginAnonymously } from './firebase';
-import { User as FirebaseUser, onAuthStateChanged } from 'firebase/auth';
+import { connectivityService } from './connectivityService';
 import type { FriendDoc, TeamDoc, TeamMember, CharacterId, PlayerAvatar } from '../types';
 import { playerAuthService } from './playerAuthService';
 
@@ -103,6 +105,13 @@ class FriendsService {
   /** Begin listening (call once from Lobby). */
   async start(): Promise<void> {
     if (this.started) return;
+    // Offline: cloud sync is unavailable; retry automatically once back online.
+    if (connectivityService.isOffline()) {
+      connectivityService.onceOnline(() => {
+        this.start();
+      });
+      return;
+    }
     const ok = await this.ensureAuth();
     if (!ok) return;
     this.started = true;
@@ -136,6 +145,7 @@ class FriendsService {
   }
 
   stop(): void {
+    this.stopHeartbeat();
     this.unsubFriends?.();
     this.unsubRequests?.();
     this.unsubTeam?.();
@@ -239,29 +249,43 @@ class FriendsService {
   }
 
   async joinTeam(code: string, selectedCharacter: CharacterId): Promise<{ success: boolean; error?: string }> {
+    if (connectivityService.isOffline()) return { success: false, error: 'الانضمام للفريق يتطلب اتصالاً بالإنترنت' };
     const ok = await this.ensureAuth();
     if (!ok) return { success: false, error: 'تعذر الاتصال بالخادم' };
     const clean = code.trim().toUpperCase();
     try {
-      const snap = await getDoc(doc(db, 'teams', clean));
-      if (!snap.exists()) return { success: false, error: 'لا يوجد فريق بهذا الرمز' };
-      const team = snap.data() as TeamDoc;
-      const me = makeMember(selectedCharacter, false);
-      if (team.members.some((m) => m.id === me.id)) {
-        this.listenTeam(clean);
-        this.notify();
-        return { success: true };
-      }
-      if (team.members.length >= MAX_TEAM_MEMBERS) {
-        return { success: false, error: 'الفريق ممتلئ (الحد الأقصى 4 لاعبين)' };
-      }
-      const members = [...team.members, me];
-      await setDoc(doc(db, 'teams', clean), { members }, { merge: true });
+      /* Atomic join: read-modify-write inside a transaction so two players
+         joining at the same instant can never push each other out (lost
+         update), and the 4-player cap is enforced on the freshest data. */
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(doc(db, 'teams', clean));
+        if (!snap.exists()) throw new Error('NO_TEAM');
+        const team = snap.data() as TeamDoc;
+        const me = makeMember(selectedCharacter, false);
+        if (team.members.some((m) => m.id === me.id)) return; // already in
+        // Drop members whose heartbeat is stale (>45s) to free a slot.
+        const now = Date.now();
+        const live = team.members.filter((m) => now - (m.lastSeen || m.joinedAt) < 45000 || m.isHost);
+        if (live.some((m) => m.id === me.id)) return;
+        if (live.length >= MAX_TEAM_MEMBERS) throw new Error('FULL');
+        const hostLeft = !live.some((m) => m.isHost);
+        const members = [...live, me];
+        const patch: Record<string, unknown> = { members };
+        // If the previous host is gone, promote the first live member.
+        if (hostLeft) {
+          members[0].isHost = true;
+          patch.hostId = members[0].id;
+        }
+        tx.set(doc(db, 'teams', clean), patch, { merge: true });
+      });
       this.listenTeam(clean);
       this.notify();
       return { success: true };
     } catch (e: any) {
-      return { success: false, error: e?.message || 'فشل الانضمام للفريق' };
+      const msg = e?.message === 'NO_TEAM' ? 'لا يوجد فريق بهذا الرمز'
+        : e?.message === 'FULL' ? 'الفريق ممتلئ (الحد الأقصى 4 لاعبين)'
+        : e?.message || 'فشل الانضمام للفريق';
+      return { success: false, error: msg };
     }
   }
 
@@ -282,29 +306,72 @@ class FriendsService {
       },
       (err) => console.warn('team snapshot error', err)
     );
+    this.startHeartbeat();
   }
 
-  async setMyCharacter(selectedCharacter: CharacterId): Promise<void> {
+  /* Update only MY member row atomically (arrayFilter-like via transaction).
+     A plain read-modify-write of the whole members array from a stale snapshot
+     could drop members who joined in the meantime. */
+  private async patchMyMember(patch: Partial<TeamMember>): Promise<void> {
     const t = this.team;
-    if (!t) return;
-    const members = t.members.map((m) =>
-      m.id === meId() ? { ...m, selectedCharacter, lastSeen: Date.now(), name: playerAuthService.getCurrentUser().username } : m
-    );
+    if (!t || connectivityService.isOffline()) return;
+    const myId = meId();
     try {
-      await setDoc(doc(db, 'teams', t.code), { members }, { merge: true });
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(doc(db, 'teams', t.code));
+        if (!snap.exists()) return;
+        const cur = snap.data() as TeamDoc;
+        let found = false;
+        const members = cur.members.map((m) => {
+          if (m.id !== myId) return m;
+          found = true;
+          return { ...m, ...patch, lastSeen: Date.now(), name: playerAuthService.getCurrentUser().username };
+        });
+        if (!found) return; // I'm not on this team anymore
+        tx.set(doc(db, 'teams', t.code), { members }, { merge: true });
+      });
     } catch (e) {
-      console.warn('setMyCharacter error', e);
+      console.warn('patchMyMember error', e);
     }
   }
 
+  async setMyCharacter(selectedCharacter: CharacterId): Promise<void> {
+    await this.patchMyMember({ selectedCharacter });
+  }
+
   async setReady(ready: boolean): Promise<void> {
-    const t = this.team;
-    if (!t) return;
-    const members = t.members.map((m) => (m.id === meId() ? { ...m, ready, lastSeen: Date.now() } : m));
-    try {
-      await setDoc(doc(db, 'teams', t.code), { members }, { merge: true });
-    } catch (e) {
-      console.warn('setReady error', e);
+    await this.patchMyMember({ ready });
+  }
+
+  /* Heartbeat: keeps my lastSeen fresh so stale members can be auto-cleaned,
+     and prunes disconnected members so slots free up for joiners. */
+  private heartbeatTimer: number | null = null;
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = window.setInterval(() => {
+      const t = this.team;
+      if (!t || connectivityService.isOffline()) return;
+      const myId = meId();
+      const now = Date.now();
+      // prune members silent for >45s (never prune the host row)
+      const dead = t.members.filter((m) => m.id !== myId && !m.isHost && now - (m.lastSeen || m.joinedAt) > 45000);
+      if (dead.length > 0) {
+        runTransaction(db, async (tx) => {
+          const snap = await tx.get(doc(db, 'teams', t.code));
+          if (!snap.exists()) return;
+          const cur = snap.data() as TeamDoc;
+          const live = cur.members.filter((m) => m.isHost || now - (m.lastSeen || m.joinedAt) <= 45000 || m.id === myId);
+          if (live.length === cur.members.length) return;
+          tx.set(doc(db, 'teams', t.code), { members: live }, { merge: true });
+        }).catch(() => {});
+      }
+      this.patchMyMember({}).catch(() => {});
+    }, 15000);
+  }
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
   }
 
@@ -329,33 +396,44 @@ class FriendsService {
 
   async leaveTeam(): Promise<void> {
     const t = this.team;
-    if (!t) return;
+    this.stopHeartbeat();
     this.unsubTeam?.();
     this.unsubTeam = null;
     this.team = null;
     this.notify();
+    if (!t) return;
+    if (connectivityService.isOffline()) return; // cannot update the cloud doc
     try {
-      const members = t.members.filter((m) => m.id !== meId());
-      if (members.length === 0) {
-        await deleteDoc(doc(db, 'teams', t.code));
-      } else {
-        // If host left, promote first remaining member and update hostId
-        const next = members[0];
-        const newHostId = members.some((m) => m.isHost) ? t.hostId : next.id;
-        if (!members.some((m) => m.isHost)) next.isHost = true;
-        await setDoc(doc(db, 'teams', t.code), { members, hostId: newHostId }, { merge: true });
-      }
+      /* Atomic leave: no lost updates if someone joins/leaves concurrently. */
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(doc(db, 'teams', t.code));
+        if (!snap.exists()) return;
+        const cur = snap.data() as TeamDoc;
+        const members = cur.members.filter((m) => m.id !== meId());
+        if (members.length === 0) {
+          tx.delete(doc(db, 'teams', t.code));
+          return;
+        }
+        const patch: Record<string, unknown> = { members };
+        // If the host left, promote the first remaining member.
+        if (cur.hostId === meId()) {
+          members[0].isHost = true;
+          patch.hostId = members[0].id;
+        }
+        tx.set(doc(db, 'teams', t.code), patch, { merge: true });
+      });
     } catch (e) {
       console.warn('leaveTeam error', e);
     }
   }
 
-  async startMatch(): Promise<{ success: boolean; error?: string }> {
+  async startMatch(difficulty?: number): Promise<{ success: boolean; error?: string }> {
     const t = this.team;
     if (!t) return { success: false, error: 'لا يوجد فريق' };
     if (t.hostId !== meId()) return { success: false, error: 'فقط قائد الفريق يمكنه بدء المباراة' };
     try {
-      await setDoc(doc(db, 'teams', t.code), { matchStartedAt: Date.now() }, { merge: true });
+      /* Publish the shared difficulty so every member launches the SAME dungeon. */
+      await setDoc(doc(db, 'teams', t.code), { matchStartedAt: Date.now(), matchDifficulty: difficulty ?? null }, { merge: true });
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message || 'فشل بدء المباراة' };
@@ -365,7 +443,7 @@ class FriendsService {
   clearMatchStart(): void {
     const t = this.team;
     if (!t) return;
-    setDoc(doc(db, 'teams', t.code), { matchStartedAt: null }, { merge: true }).catch(() => { });
+    setDoc(doc(db, 'teams', t.code), { matchStartedAt: null, matchDifficulty: null }, { merge: true }).catch(() => { });
   }
 }
 

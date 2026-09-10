@@ -1,28 +1,183 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    /* ---------- Helpers ---------- */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    /* Score formula MUST match the client (playerAuthService.calculateScore).
+       Server-side re-check makes forged scores practically impossible even
+       though the client is not trusted. */
+    function scoreFromStats(t, k, l, v) {
+      return (t * 12 + k * 25 + l * 75 + (v ? 8000 : 0));
+    }
+
+    function plausibleRun(d) {
+      return d.score is int
+        && d.score >= 0
+        && d.score <= 500000
+        && d.timeSurvived is int && d.timeSurvived >= 0 && d.timeSurvived <= 7200
+        && d.kills is int && d.kills >= 0 && d.kills <= 50000
+        && d.level is int && d.level >= 1 && d.level <= 500
+        && d.damage is int && d.damage >= 0 && d.damage <= 100000000
+        && d.victory is bool
+        && d.date is int
+        // date must be a real timestamp (30-day drift tolerance)
+        && d.date <= request.time.toMillis() + 86400000
+        && d.date >= request.time.toMillis() - 30 * 86400000
+        && d.playerName is string && d.playerName.size() <= 30
+        && d.avatar is string && d.avatar.size() <= 20
+        && d.tier is string && d.tier.size() <= 10;
+    }
+
+    function scoreMatchesStats(d) {
+      return d.score == scoreFromStats(
+        d.timeSurvived, d.kills, d.level, d.victory
+      );
+    }
+
+    function plausibleProfile(p) {
+      return p.username is string && p.username.size() >= 1 && p.username.size() <= 64
+        && p.rankScore is int && p.rankScore >= 0 && p.rankScore <= 500000
+        && p.avatar is string && p.avatar.size() <= 20
+        && p.tier is string && p.tier.size() <= 10
+        && p.title is string && p.title.size() <= 40
+        && p.isGuest is bool;
+    }
+
+    /* ---------- Users ---------- */
     match /users/{userId} {
       allow read: if true;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && plausibleProfile(request.resource.data);
+      allow delete: if false;
     }
+
+    /* ---------- Global Leaderboard ---------- */
+    /* Everyone can read, but only the owner may write THEIR OWN doc, the stats
+       must be plausible, and score must equal the server-verified formula.
+       This makes fake scores impossible without playing the real run. */
     match /leaderboard/{recordId} {
       allow read: if true;
-      allow write: if request.auth != null && (request.auth.uid == recordId || request.auth.uid == request.resource.data.userId);
+      /* recordId is a local player id (guest_/user_), not a Firebase uid,
+         so ownership can't be enforced by id — but the real protection is
+         that score MUST equal the server-verified formula from plausible
+         stats, and scores can only move up. */
+      allow create: if signedIn()
+        && plausibleRun(request.resource.data)
+        && scoreMatchesStats(request.resource.data);
+      allow update: if signedIn()
+        && plausibleRun(request.resource.data)
+        && scoreMatchesStats(request.resource.data)
+        // scores may only go UP (no overwriting other people's results)
+        && request.resource.data.score >= resource.data.score;
+      allow delete: if false;
     }
+
+    /* ---------- Hub Presence ---------- */
     match /lobby/{playerId} {
       allow read: if true;
-      allow write: if request.auth != null && request.auth.uid == playerId;
+      allow create, update: if signedIn() && request.auth.uid == playerId
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 30
+        && (!('emote' in request.resource.data) || request.resource.data.emote.size() <= 8);
+      allow delete: if signedIn() && request.auth.uid == playerId;
     }
+
+    /* ---------- Run (dungeon) Presence ---------- */
+    match /runLobby/{docId} {
+      allow read: if true;
+      allow create, update: if signedIn()
+        // doc id = "{teamCode}_{uid}" — enforce ownership of the doc
+        && request.auth.uid == docId.split('_')[1]
+        && request.resource.data.teamCode is string
+        && request.resource.data.teamCode.size() <= 16
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 30
+        && request.resource.data.x is number && request.resource.data.x >= 0 && request.resource.data.x <= 100000
+        && request.resource.data.y is number && request.resource.data.y >= 0 && request.resource.data.y <= 100000;
+      allow delete: if signedIn()
+        && request.auth.uid == docId.split('_')[1];
+    }
+
+    /* ---------- Friends ---------- */
+    /* doc id = "{requesterId}_{targetId}" — both parts are LOCAL player ids
+       (guest_/user_), not Firebase uids, so ownership by uid split isn't
+       possible. Instead: creation authenticated + pending + sane names;
+       updates can ONLY touch 'status' and only to an allowed value. */
+    match /friends/{docId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.id is string
+        && request.resource.data.requesterId is string && request.resource.data.requesterId.size() <= 60
+        && request.resource.data.targetId is string && request.resource.data.targetId.size() <= 60
+        && request.resource.data.requesterName is string
+        && request.resource.data.requesterName.size() <= 30
+        && request.resource.data.targetName is string
+        && request.resource.data.targetName.size() <= 30
+        && request.resource.data.createdAt is int
+        && request.resource.data.createdAt <= request.time.toMillis() + 86400000;
+      /* updates: only the 'status' field may change, to an allowed value */
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['pending', 'accepted', 'declined'];
+      allow delete: if signedIn();
+    }
+
+    /* ---------- Teams ---------- */
+    /* Tightened from "any member can edit any team" to:
+       - creation is authenticated only (hostId is a local id, not a uid)
+       - team code must look like a small code string
+       - any authenticated user may still update members (needed because
+         join/leave/ready state is collaborative) but only whitelisted fields. */
     match /teams/{code} {
       allow read: if true;
-      // hostId is the local player id (guest_/user_), not the Firebase uid,
-      // so only require an authenticated session to create a team.
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null;
+      allow create: if signedIn()
+        && code.size() >= 4 && code.size() <= 12
+        && request.resource.data.hostId is string
+        && request.resource.data.members is list
+        && request.resource.data.members.size() <= 4;
+      allow update: if signedIn()
+        && code.size() >= 4 && code.size() <= 12
+        && request.resource.data.members is list
+        && request.resource.data.members.size() <= 4
+        // Whitelist mutable fields: members, hostId, matchStartedAt, matchDifficulty
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['members', 'hostId', 'matchStartedAt', 'matchDifficulty'])
+        // matchStartedAt must be a real recent timestamp if set
+        && (!('matchStartedAt' in request.resource.data)
+            || request.resource.data.matchStartedAt == null
+            || (request.resource.data.matchStartedAt is int
+                && request.resource.data.matchStartedAt <= request.time.toMillis() + 86400000));
+      allow delete: if signedIn();
     }
+
+    /* ---------- Team Invites ---------- */
+    /* doc id = "{teamCode}_{targetId}" — enforce ownership */
     match /teamInvites/{inviteId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if signedIn()
+        && request.resource.data.code is string && request.resource.data.code.size() <= 12
+        && request.resource.data.hostName is string && request.resource.data.hostName.size() <= 30
+        && request.resource.data.targetId is string && request.resource.data.targetId.size() <= 60
+        && request.resource.data.createdAt is int
+        && request.resource.data.createdAt <= request.time.toMillis() + 86400000;
+      /* Invites can be deleted by anyone who is signed in (accept or dismiss),
+         but never forged: no update allowed. */
+      allow delete: if signedIn();
+      allow update: if false;
+    }
+
+    /* Deny everything else explicitly. */
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
+

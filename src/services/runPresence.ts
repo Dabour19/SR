@@ -14,6 +14,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { auth, db, loginAnonymously } from './firebase';
+import { connectivityService } from './connectivityService';
 import { playerAuthService } from './playerAuthService';
 import { getCharacter } from './lobbyService';
 import type { CharacterTheme } from '../types';
@@ -57,6 +58,8 @@ class RunPresenceService {
   /** Begin publishing my position for this team's run. */
   async start(teamCode: string): Promise<void> {
     if (!teamCode) return;
+    // Offline: co-op presence needs the cloud — skip silently, solo run continues.
+    if (connectivityService.isOffline()) return;
     this.teamCode = teamCode;
     if (this.started) {
       this.active = true;
@@ -133,7 +136,7 @@ class RunPresenceService {
         updatedAt: now,
       },
       { merge: true }
-    ).catch(() => {});
+    ).catch(() => { });
   }
 
   /** Leave the run: remove my doc and stop listening. */
@@ -142,7 +145,7 @@ class RunPresenceService {
     if (this.pendingTimer !== null) { window.clearTimeout(this.pendingTimer); this.pendingTimer = null; }
     const uid = auth.currentUser?.uid;
     if (uid && this.teamCode) {
-      deleteDoc(doc(db, 'runLobby', `${this.teamCode}_${uid}`)).catch(() => {});
+      deleteDoc(doc(db, 'runLobby', `${this.teamCode}_${uid}`)).catch(() => { });
     }
     this.unsub?.();
     this.unsub = null;

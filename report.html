@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تقرير اللعبة — Survivor Rogue</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; direction: rtl; color:#1e293b; line-height:1.7; font-size:13px; margin:0; }
+  h1 { color:#4f46e5; font-size:26px; margin:0 0 4px; }
+  h2 { color:#6d28d9; font-size:18px; border-bottom:3px solid #ede9fe; padding-bottom:4px; margin-top:26px; }
+  h3 { color:#7c3aed; font-size:14.5px; margin:14px 0 6px; }
+  .sub { color:#64748b; font-size:12px; margin-bottom:18px; }
+  .cover { text-align:center; padding:110px 0 60px; }
+  .cover .emoji { font-size:64px; }
+  .cover .tag { display:inline-block; background:#ede9fe; color:#5b21b6; border-radius:20px; padding:4px 16px; font-size:12px; margin-top:8px; }
+  table { width:100%; border-collapse:collapse; margin:8px 0 14px; font-size:12px; }
+  th { background:#6d28d9; color:#fff; padding:6px 8px; text-align:right; }
+  td { border:1px solid #e2e8f0; padding:5px 8px; }
+  tr:nth-child(even) td { background:#f8fafc; }
+  .card { border:1px solid #e2e8f0; border-radius:10px; padding:10px 14px; margin:8px 0; background:#fbfbff; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  ul { margin:4px 0 10px; padding-right:18px; }
+  li { margin-bottom:3px; }
+  code { background:#f1f5f9; border-radius:4px; padding:1px 5px; font-size:11px; direction:ltr; display:inline-block; }
+  .stat { display:inline-block; background:#eef2ff; border-radius:8px; padding:6px 12px; margin:3px; font-size:12px; color:#3730a3; }
+  .pagebreak { page-break-before: always; }
+  footer { margin-top:30px; color:#94a3b8; font-size:10px; text-align:center; border-top:1px solid #e2e8f0; padding-top:8px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="emoji">⚔️👻🪓</div>
+  <h1>Survivor Rogue: 2D Auto-Shooter</h1>
+  <p class="sub">لعبة بقاء روج-لايت حركية بتصويب تلقائي — تقرير فني وتصميمي شامل</p>
+  <span class="tag">React 19 + TypeScript + Canvas 2D + Firebase + Capacitor Android</span>
+  <p class="sub">تاريخ التقرير: {{date}} &nbsp;|&nbsp; المسار: c:\Users\hp\Documents\GitHub\SR</p>
+</div>
+
+<div class="pagebreak"></div>
+
+<h2>1. نظرة عامة على اللعبة</h2>
+<p><b>Survivor Rogue: 2D Auto-Shooter</b> هي لعبة بقاء (Survival) من نوع روج-لايت بمنظور ثنائي الأبعاد، يعمل فيها اللاعب على تحريك شخصيته فقط بينما يتم التصويب والإطلاق تلقائياً (Auto-Shooter). جمعت اللعبة أسلوباً مشابهاً بألعاب Vampire Survivors مع عالم مفتوح (Hub مدينة) وسراديب بمستويات صعوبة متدرجة تصل إلى 70 مستوى.</p>
+<div class="card">
+<b>الهدف الأساسي:</b> البقاء 20 دقيقة كاملة (1200 ثانية) أمام موجات متصاعدة من الأعداء، مع مواجهات زعماء دورية، وجمع جواهر الخبرة للترقية داخل الجولة، وكسب العملات لتنمية الشخصية خارج الجولة.
+</div>
+
+<h3>مؤشرات سريعة</h3>
+<span class="stat">مدة الجولة المستهدفة: 20 دقيقة</span>
+<span class="stat">6 شخصيات قابلة للعب</span>
+<span class="stat">10 أسلحة (5 عامة + 5 حصرية)</span>
+<span class="stat">6 سلبيات قابلة للترقية</span>
+<span class="stat">14 منطقة سرديب (1–70)</span>
+<span class="stat">4 صناديق غاتشا</span>
+
+<h2>2. البنية التقنية للمشروع</h2>
+<table>
+<tr><th>المكوّن</th><th>التقنية</th><th>الدور</th></tr>
+<tr><td>الواجهة والواجهات الرسومية UI</td><td>React 19 + TypeScript + Tailwind CSS 4 + lucide-react + motion</td><td>اللوبي، HUD، نوافذ الترقيات والصناديق ولوحة الصدارة</td></tr>
+<tr><td>محرك اللعبة</td><td>HTML Canvas 2D (ملف <code>gameEngine.ts</code> ~3400 سطر)</td><td>حلقة اللعب، الفيزياء، الرسم، الاصطدامات، الزعماء</td></tr>
+<tr><td>الحالة والخدمات</td><td>Firebase 12 (Auth + Firestore) عبر 6 خدمات منفصلة</td><td>الحسابات، الصدارة، الأصدقاء والفرق، الحضور الحي</td></tr>
+<tr><td>البناء والنشر</td><td>Vite 6 + vite-plugin-pwa + Firebase Hosting</td><td>PWA قابل للتثبيت يعمل دون اتصال</td></tr>
+<tr><td>الموبايل</td><td>Capacitor 8 (حزمة Android كاملة)</td><td>إصدار Android مع أيقونات وشاشات بداية</td></tr>
+<tr><td>الصوت</td><td>محرك صوتي خاص <code>audio/soundEngine.ts</code></td><td>مؤثرات الطلقات والضربات</td></tr>
+</table>
+
+<h3>هيكل المجلد <code>src/</code></h3>
+<table>
+<tr><th>المسار</th><th>الوصف</th></tr>
+<tr><td><code>game/gameEngine.ts</code></td><td>قلب اللعبة: الحلقة الرئيسية، الكاميرا، الشبكة المكانية للأعداء، أسلحة، زعماء، تأثيرات اهتزاز الشاشة</td></tr>
+<tr><td><code>game/cityScene.ts</code></td><td>المدينة المركزية (Hub) و14 منطقة سرديب بـ6 بيئات لونية (مرج، غابة، مستنقع، صحراء، تندرا، أراضٍ بركانية) — عالم بعرض 10200 بكسل</td></tr>
+<tr><td><code>game/weapons.ts</code> / <code>passives.ts</code></td><td>سجلات تعريفات الأسلحة والسلبيات (ثنائية اللغة عربي/إنجليزي)</td></tr>
+<tr><td><code>game/waves.ts</code></td><td>جدول الموجات (WAVE_SCHEDULE) + أحداث الزعماء + ثابت مدة اللعبة</td></tr>
+<tr><td><code>game/skillTree.ts</code></td><td>شجرة مهارات لكل شخصية (سبّكات: ضرر/صحة/درع/سرعة/شفاء/جذب)</td></tr>
+<tr><td><code>game/objectPool.ts</code></td><td>مجمّع كائنات (Object Pooling) للأعداء والقذائف والجواهر — أهم تقنية أداء</td></tr>
+<tr><td><code>game/characterSprite.ts</code></td><td>رسم سبرايت الشخصيات برمجياً (بدون ملفات صور)</td></tr>
+<tr><td><code>components/</code></td><td>16 مكوّن React: اللوبي، HUD، نوافذ الموت/الترقية/الصناديق/المهارات، عصا تحكم افتراضية للموبايل</td></tr>
+<tr><td><code>services/</code></td><td>firebase، playerAuthService، lobbyService (اقتصاد/متجر)، friendsService (أصدقاء وفرق)، hubPresence و runPresence (لاعبون حيّون)</td></tr>
+</table>
+
+<h2>3. الشخصيات القابلة للعب</h2>
+<table>
+<tr><th>الشخصية</th><th>الندرة</th><th>السعر</th><th>صحة</th><th>سرعة</th><th>ضرر</th><th>الأسلحة الابتدائية</th><th>السلاح الحصري (بالمستوى 3)</th></tr>
+<tr><td>⚔️ النصل (Blade)</td><td>عادية</td><td>مجانية (الافتراضية)</td><td>100</td><td>×1.00</td><td>×1.00</td><td>نصال دوّارة + انفجار سحري</td><td>عاصفة النصال</td></tr>
+<tr><td>🧙 الساحر (Mage)</td><td>نادرة</td><td>500</td><td>80</td><td>×1.00</td><td>×1.25</td><td>انفجار سحري</td><td>النبضة الصقيعية</td></tr>
+<tr><td>🏹 الصياد (Hunter)</td><td>نادرة</td><td>750</td><td>90</td><td>×1.20</td><td>×1.00</td><td>عصا اللهب</td><td>وديع السموم</td></tr>
+<tr><td>🛡️ القدّيس (Paladin)</td><td>ملحمية</td><td>1500</td><td>150</td><td>×0.90</td><td>×0.95</td><td>الهالة المقدسة</td><td>شعاع الحكم</td></tr>
+<tr><td>👻 الطيف (Wraith)</td><td>ملحمية</td><td>2000</td><td>75</td><td>×1.35</td><td>×1.15</td><td>ضربة البرق</td><td>منجل الأرواح</td></tr>
+<tr><td>🪓 المهووس (Berserker)</td><td>أسطورية</td><td>4000</td><td>120</td><td>×1.10</td><td>×1.50</td><td>نصال دوّارة</td><td>قاطع الدماء</td></tr>
+</table>
+
+<h2>4. نظام الأسلحة</h2>
+<p>كل سلاح له ضرر أساسي وزمن انتظار (Cooldown) و5 مستويات، ويُعرض للاعب كخيار ترقية عند رفع المستوى أثناء الجولة. خمسة أسلحة متاحة للجميع، وخمسة حصرية بشخصية معينة تُفتح من شجرة المهارات عند المستوى 3.</p>
+<table>
+<tr><th>السلاح</th><th>الضرر الأساسي</th><th>الانتظار (ث)</th><th>الوصف</th></tr>
+<tr><td>💫 الانفجار السحري (Arcane Burst)</td><td>28</td><td>1.1</td><td>مقذوفات سحرية تلقائية نحو أقرب عدو — متاح افتراضياً</td></tr>
+<tr><td>🌀 النصال الدوّارة (Spinning Blades)</td><td>دوّارة حول اللاعب</td><td>—</td><td>شفرة تدور حول اللاعب باستمرار</td></tr>
+<tr><td>✨ الهالة المقدسة (Holy Aura)</td><td>هالة مناطق</td><td>—</td><td>ضرر متواصل لمن يقترب من اللاعب</td></tr>
+<tr><td>⚡ ضربة البرق (Lightning Strike)</td><td>—</td><td>—</td><td>صواعق عشوائية على الأعداء</td></tr>
+<tr><td>🔥 عصا اللهب (Fire Wand)</td><td>40</td><td>1.5</td><td>كرات نارية متفجرة بضرر مساحي (AoE)</td></tr>
+<tr><td>🌪️ عاصفة النصال (حصري: النصل)</td><td>22</td><td>2.2</td><td>مروحة نصال طيفية بكل الاتجاهات</td></tr>
+<tr><td>❄️ النبضة الصقيعية (حصري: الساحر)</td><td>—</td><td>—</td><td>نبضة تجميد دوائرية</td></tr>
+<tr><td>☠️ وديع السموم (حصري: الصياد)</td><td>—</td><td>—</td><td>رشقة سهام سامة</td></tr>
+<tr><td>🌈 شعاع الحكم (حصري: القدّيس)</td><td>—</td><td>—</td><td>شعاع عمودي محكم</td></tr>
+<tr><td>💀 منجل الأرواح (حصري: الطيف)</td><td>—</td><td>—</td><td>مناجل تُجمع الأرواح</td></tr>
+<tr><td>🩸 قاطع الدماء (حصري: المهووس)</td><td>26</td><td>1.6</td><td>نوبات دموية تخترق الأعداء وتشفي عند كل قتل</td></tr>
+</table>
+
+<h2>5. السلبيات (Passives)</h2>
+<table>
+<tr><th>السلبية</th><th>التأثير لكل مستوى (حتى 5)</th></tr>
+<tr><td>🧲 مغناطيس الجواهر</td><td>+40% نطاق جذب الجواهر</td></tr>
+<tr><td>👟 أحذية السرعة</td><td>+12% سرعة الحركة</td></tr>
+<tr><td>⚔️ شعار القوة (Might)</td><td>+18% الضرر الشامل لكل الأسلحة</td></tr>
+<tr><td>❤️ الحيوية (Vitality)</td><td>زيادة الصحة القصوى</td></tr>
+<tr><td>🛡️ الدرع الفولاذي</td><td>−2 ضرر متلقى و+5% مقاومة</td></tr>
+<tr><td>⏳ تسارع الزمن (Haste)</td><td>−10% زمن انتظار الأسلحة</td></tr>
+</table>
+
+<h2>6. الموجات والزعماء</h2>
+<p>مدة اللعبة المستهدفة <b>20 دقيقة</b> موزعة على جدول موجات متدرّج؛ كثافة الظهور (spawnRate) وقوة الأعداء ترتفع مع الزمن، ويُزنتر أحدهم حسب الوقت المنقضي: HP الأعداء يتوسّع مع الزمن أيضاً: <code>(1 + (الوقت/120) × 0.45)</code>.</p>
+<table>
+<tr><th>الوقت (ث)</th><th>الزعيم</th><th>الصحة</th><th>الضرر</th><th>XP</th></tr>
+<tr><td>115</td><td>🐂 مينوتور السراديب</td><td>2,000</td><td>22</td><td>35</td></tr>
+<tr><td>290 (~4:50)</td><td>👑 ملك الغيلان السام</td><td>5,800</td><td>28</td><td>60</td></tr>
+<tr><td>580 (~9:40)</td><td>🌋 طاغوت الأعماق البركاني</td><td>14,400</td><td>35</td><td>120</td></tr>
+<tr><td>~15:40+</td><td>💀 حاكم الظلال الأكبر (Reaper)</td><td>30,000</td><td>42</td><td>—</td></tr>
+</table>
+<p>أنواع الأعداء: خفافيش، زومبي، هياكل، أشباح، أورك، سحرة نار + صنفان من الزعماء (Minotaur / Reaper).</p>
+
+<h2>7. شجرة المهارات والتقدّم الدائم</h2>
+<ul>
+<li>الحد الأقصى للمستوى: <b>30</b>؛ كل ترقية تمنح نقطة مهارة تُصرف خارج الجولة.</li>
+<li>كل شخصية لها شجرة مهارات خاصة بعُقد (Skill Nodes) ترتبط بالسبّك (ضرر/صحة/درع/سرعة/شفاء/جذب)، وبعضها يتطلب عقداً سابقة (<code>requires</code>).</li>
+<li>مثال من شجرة المهووس: حمّى الدمار (+12% ضرر/مستوى)، دم كثيف (+18 صحة/مستوى)، جلد حديدي (+2 درع)، تدفّق الحمّى (+0.25 شفاء/ث).</li>
+<li>السلاح الحصري للشخصية يُفتح عند <b>المستوى 3</b> ويبدأ بالظهور كخيار ترقية داخل الجولات.</li>
+</ul>
+
+<h2>8. الاقتصاد والمتجر والصناديق (Gacha)</h2>
+<table>
+<tr><th>الصندوق</th><th>السعر</th><th>عادية</th><th>نادرة</th><th>ملحمية</th><th>أسطورية</th></tr>
+<tr><td>📦 صندوق خشبي</td><td>250</td><td>70%</td><td>22%</td><td>7%</td><td>1%</td></tr>
+<tr><td>🎁 صندوق فضي</td><td>600</td><td>40%</td><td>38%</td><td>18%</td><td>4%</td></tr>
+<tr><td>🏆 صندوق ذهبي</td><td>1500</td><td>10%</td><td>40%</td><td>38%</td><td>12%</td></tr>
+<tr><td>💠 الأسطوري</td><td>3500</td><td>0%</td><td>20%</td><td>50%</td><td>30%</td></tr>
+</table>
+<h3>ترقيات المتجر الدائمة (Perks)</h3>
+<table>
+<tr><th>العنصر</th><th>السعر</th><th>التأثير</th></tr>
+<tr><td>🪙 عملات مضاعفة</td><td>2000</td><td>×2 العملات من كل جولة</td></tr>
+<tr><td>🛡️ دروع إضافية</td><td>1200</td><td>+3 درع في بداية كل جولة</td></tr>
+<tr><td>🧲 مغناطيس محسّن</td><td>800</td><td>+50% نطاق الجذب</td></tr>
+<tr><td>👟 بداية رشيقة</td><td>1000</td><td>+10% سرعة منذ بداية الجولة</td></tr>
+<tr><td>❤️‍🩹 تعزيز التجدد</td><td>1500</td><td>+0.5 صحة/ثانية</td></tr>
+<tr><td>🍀 تميمة الحظ</td><td>2500</td><td>تحسين احتمالات الصناديق</td></tr>
+</table>
+<p>يعطي النظام <b>500 عملة</b> كمكافأة ترحيب، وتبدأ الحسابات بامتلاك شخصية النصل افتراضياً.</p>
+
+<h2>9. عالم مفتوح وسراديب متدرّجة</h2>
+<ul>
+<li>مدينة مركزية (Hub) بحدود 1240 وحدة، حولها 14 منطقة سرديب على شريط أفقي بعرض 640 لكل منطقة (العالم الكلي ≈ 10200×900).</li>
+<li>كل منطقة تغطي 5 مستويات صعوبة (من 1–5 حتى 66–70) بلون/بيئة مختلفة يدور بين 6 بيئات.</li>
+<li>صعوبة السرداب (1–10) تتحكم في: عدد الأعداء الابتدائي <code>8 + صعوبة×5</code>، مضاعف الصحة <code>+35% لكل مستوى</code>، مضاعف الضرر <code>+22%</code>، وعدد خزائن الكنوز <code>3 + صعوبة×1.5</code>.</li>
+<li>ميزان الألعاب الذكي: ضرر اللاعب على الأعداء يقل قليلاً مع الصعوبة (×0.04 لكل مستوى، وبحد أدنى 0.5)، وضرر الزعماء على اللاعب يُخفّض 15% لمنع اللعب السهل بالقذائف الكثيفة.</li>
+</ul>
+
+<h2>10. الميزات الاجتماعية والخدمات السحابية</h2>
+<table>
+<tr><th>الخدمة</th><th>الوظيفة</th></tr>
+<tr><td><code>playerAuthService</code></td><td>حسابات اللاعبين: دخول Google أو دخول سريع، حفظ التقدّم في Firestore، رتب (Bronze وأعلى)، لوحة صدارة عالمية (أفضل 50)، 3 نقاط رتب</td></tr>
+<tr><td><code>friendsService</code></td><td>أصدقاء + فرق (Teams) برموز دعوة عبر Firestore مع مستمعات لحظية <code>onSnapshot</code>، والضيوف يُرقّون تلقائياً إلى مصادقة مجهولة</td></tr>
+<tr><td><code>hubPresence</code></td><td>إظهار اللاعبين الحيّين داخل مدينة Hub في الوقت الحقيقي</td></tr>
+<tr><td><code>runPresence</code></td><td>مزامنة اللاعبين المتشاركين في الجولة نفسها عبر <code>runLobby</code></td></tr>
+<tr><td><code>lobbyService</code></td><td>الاقتصاد المحلي: عملات، شخصيات مملوكة، صناديق، عناصر متجر، ملف الحالة</td></tr>
+</table>
+
+<h2>11. الأداء والتقنيات الهندسية</h2>
+<ul>
+<li><b>Object Pooling:</b> إعادة استخدام كائنات الأعداء/القذائف/الجواهر بدل الإنشاء-الحذف، لتفادي ضغط Garbage Collector.</li>
+<li><b>Grid Spatial Hashing:</b> تقسيم الأعداء إلى خلايا (<code>buildEnemyGrid</code>) لتسريع كشف الاصطدام مع مئات الأعداء.</li>
+<li><b>جودة تكيفية:</b> متوسط متحرك لزمن الإطار (<code>avgFrameDt</code> EMA) لتخفيض جودة المؤثرات تلقائياً على الأجهزة الضعيفة.</li>
+<li><b>تهدئة اهتزاز الشاشة:</b> تقليل قوة الشيك مع تقدّم الصعوبة لمنع الغثيان البصري.</li>
+<li><b>Virtual Joystick + ربط لوحة مفاتيح (WASD/أسهم):</b> دعم كامل للجوال والحاسوب.</li>
+<li><b>PWA + Capacitor:</b> اللعبة تعمل بلا إنترنت (وضع أوفلاين بمؤشر)، وتُثبّت كتطبيق.</li>
+</ul>
+
+<h2>12. هيكل واجهات المستخدم</h2>
+<table>
+<tr><th>المكوّن</th><th>الدور</th></tr>
+<tr><td>Lobby.tsx / LobbyHub.tsx</td><td>شاشة اللوبي: اختيار الشخصية والمتجر وشجرة المهارات</td></tr>
+<tr><td>GameHUD.tsx</td><td>شريط الصحة/الخبرة/المستوى/الوقت أثناء اللعب</td></tr>
+<tr><td>PauseModal / GameOverModal</td><td>الإيقاف المؤقت وشاشة نهاية الجولة بالإحصائيات</td></tr>
+<tr><td>LevelUpModal</td><td>اختيار ترقية (سلاح/سلبية) عند رفع المستوى</td></tr>
+<tr><td>CrateOpeningModal</td><td>حركة فتح الصناديق وإظهار الجائزة</td></tr>
+<tr><td>LeaderboardModal / AuthModal</td><td>لوحة الصدارة وتسجيل الدخول</td></tr>
+<tr><td>HelpModal / VirtualJoystick / PWAInstall</td><td>التعليمات، التحكم باللمس، زر التثبيت</td></tr>
+</table>
+
+<h2>13. نقاط القوة والتوصيات</h2>
+<div class="grid">
+<div class="card"><b>✅ نقاط القوة</b><ul>
+<li>محرك أداء قوي (Pooling + Spatial Grid + جودة تكيّفية).</li>
+<li>محتوى ثنائي اللغة كامل (عربي/إنجليزي) في كل التعريفات.</li>
+<li>حلقة تقدّم مزدوجة: داخل الجولة (ترقيات) وخارجها (شجرة مهارات + متجر + غاتشا).</li>
+<li>تكامل اجتماعي كامل (أصدقاء، فرق، صدارة، حضور حي).</li>
+<li>إصدار PWA + Android من نفس الكود.</li>
+</ul></div>
+<div class="card"><b>🔧 توصيات</b><ul>
+<li>فصل <code>gameEngine.ts</code> (3400+ سطر) إلى وحدات أصغر (أنظمة عدو/سلاح/رسم).</li>
+<li>إضافة اختبارات وحدة لمعادلات التوازن (<code>waves.ts</code>, <code>skillTree.ts</code>).</li>
+<li>توثيق قيم التوسّع في ملف تصميم (Design Doc) منفصل.</li>
+<li>تغطية <code>firestore.rules</code> بمراجعة أمنية لتوثيق القواعد الممنوعة/المسموحة.</li>
+</ul></div>
+</div>
+
+<footer>تقرير مُولّد آلياً من تحليل الكود المصدري — Survivor Rogue: 2D Auto-Shooter</footer>
+</body>
+</html>

@@ -5,6 +5,7 @@ import { getCharacter, CHARACTERS, lobbyService } from '../services/lobbyService
 import { drawHeroSprite } from '../game/characterSprite';
 import { hubPresence, type HubPlayer } from '../services/hubPresence';
 import { playerAuthService } from '../services/playerAuthService';
+import { friendsService } from '../services/friendsService';
 import {
   WORLD_W, WORLD_H, HORIZON_Y, BUILDINGS, ALL_BUILDINGS, FOUNTAIN, LAMPS, TREES, BENCHES, PLAYER_SPAWN, CITY_EDGE,
   updateDungeonSpawns,
@@ -339,10 +340,11 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
 
       updateNpcs(dt);
 
-      /* Periodic portal spawner: expire old gates & randomly spawn new ones. */
+      /* Periodic portal spawner: expire old gates & randomly spawn new ones.
+         Team members share a seed (team code) → identical gates everywhere. */
       if (t - lastSpawnCheck > 4000) {
         lastSpawnCheck = t;
-        updateDungeonSpawns(levelRef.current);
+        updateDungeonSpawns(levelRef.current, Date.now(), friendsService.getTeam()?.code ?? null);
       }
 
       // nearest building (state update only on change)

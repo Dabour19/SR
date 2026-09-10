@@ -13,10 +13,10 @@ import {
   logoutFirebase,
   savePlayerToFirestore,
   loadPlayerFromFirestore,
-  syncToGlobalLeaderboard,
   fetchGlobalLeaderboard,
 } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
+import { connectivityService } from './connectivityService';
 
 const STORAGE_ACCOUNTS_KEY = 'survivor_rogue_accounts_v2';
 const STORAGE_CURRENT_USER_KEY = 'survivor_rogue_current_uid_v2';
@@ -210,6 +210,9 @@ class PlayerAuthService {
     this.loadState();
     this.initFirebaseAuthListener();
     this.refreshRemoteLeaderboard();
+    // Re-sync the global leaderboard whenever connectivity is restored so the
+    // offline session's local records are merged with the cloud.
+    connectivityService.onceOnline(() => this.refreshRemoteLeaderboard());
   }
 
   public subscribe(listener: (user: PlayerAccount) => void): () => void {
@@ -701,7 +704,7 @@ class PlayerAuthService {
     }
 
     // Update Leaderboard
-    const rankPos = this.syncCurrentToLeaderboard(runRecord);
+    const rankPos = this.syncCurrentToLeaderboard();
 
     this.notifyListeners();
 
@@ -713,7 +716,7 @@ class PlayerAuthService {
     };
   }
 
-  private syncCurrentToLeaderboard(latestRun?: PlayerRunHistory): number {
+  private syncCurrentToLeaderboard(): number {
     const user = this.getCurrentUser();
     if (user.rankScore <= 0 && (!user.history || user.history.length === 0)) {
       return -1;

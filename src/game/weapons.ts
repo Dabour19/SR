@@ -1,4 +1,4 @@
-import { CharacterId, WeaponDef, WeaponType } from '../types';
+import { WeaponDef, WeaponType } from '../types';
 
 export const WEAPON_REGISTRY: Record<WeaponType, WeaponDef> = {
   spinning_blades: {

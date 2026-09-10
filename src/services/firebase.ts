@@ -5,11 +5,13 @@ import {
   signInWithPopup,
   signInAnonymously,
   signOut,
-  onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDoc,
   setDoc,
@@ -19,6 +21,7 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
+import { connectivityService } from './connectivityService';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { PlayerAccount, LeaderboardRecord } from '../types';
 
@@ -32,13 +35,27 @@ googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
 
-// Initialize Firestore with configured databaseId
-export const db = getFirestore(
-  app,
-  firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
-    ? firebaseConfig.firestoreDatabaseId
-    : undefined
-);
+// Initialize Firestore with offline persistence: reads are served from the
+// local cache and writes are queued while offline, then synced automatically
+// once connectivity returns.
+let db: ReturnType<typeof getFirestore>;
+try {
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    ...(firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+      ? { databaseId: firebaseConfig.firestoreDatabaseId }
+      : {}),
+  });
+} catch {
+  // Fallback (e.g. IndexedDB unavailable) — still fully functional online.
+  db = getFirestore(
+    app,
+    firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+      ? firebaseConfig.firestoreDatabaseId
+      : undefined
+  );
+}
+export { db };
 
 /**
  * Sign in with Google Popup
@@ -115,6 +132,11 @@ export async function logoutFirebase(): Promise<void> {
  */
 export async function savePlayerToFirestore(account: PlayerAccount): Promise<boolean> {
   if (!account || !account.id) return false;
+  if (connectivityService.isOffline()) {
+    // Queued locally via the persistent Firestore cache instead.
+    console.warn('Offline: profile save deferred until connectivity returns.');
+    return false;
+  }
   try {
     const userDocRef = doc(db, 'users', account.id);
     await setDoc(
@@ -147,6 +169,7 @@ export async function savePlayerToFirestore(account: PlayerAccount): Promise<boo
  * Load player account from Firestore
  */
 export async function loadPlayerFromFirestore(uid: string): Promise<PlayerAccount | null> {
+  if (connectivityService.isOffline()) return null;
   try {
     const userDocRef = doc(db, 'users', uid);
     const snap = await getDoc(userDocRef);
@@ -189,6 +212,7 @@ export async function loadPlayerFromFirestore(uid: string): Promise<PlayerAccoun
  */
 export async function syncToGlobalLeaderboard(record: LeaderboardRecord): Promise<void> {
   if (!record || !record.id) return;
+  if (connectivityService.isOffline()) return; // kept in local cache, synced later
   try {
     const recordDocRef = doc(db, 'leaderboard', record.id);
     await setDoc(
@@ -208,6 +232,7 @@ export async function syncToGlobalLeaderboard(record: LeaderboardRecord): Promis
  * Fetch top records from global Firestore Leaderboard
  */
 export async function fetchGlobalLeaderboard(): Promise<LeaderboardRecord[]> {
+  if (connectivityService.isOffline()) return [];
   try {
     const lbCollection = collection(db, 'leaderboard');
     const q = query(lbCollection, orderBy('score', 'desc'), limit(50));

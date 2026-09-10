@@ -8,17 +8,15 @@ import { soundEngine } from '../audio/soundEngine';
 import {
   ActivePassive,
   ActiveWeapon,
-  CharacterId,
   CharacterTheme,
   EnemyEntity,
   GameRunStats,
   PassiveType,
   PlayerStats,
-  ProjectileEntity,
   WeaponType,
 } from '../types';
 import { ObjectPoolSystem } from './objectPool';
-import { getCurrentWave, WAVE_SCHEDULE } from './waves';
+import { getCurrentWave } from './waves';
 import { drawHeroSprite } from './characterSprite';
 import { runPresence } from '../services/runPresence';
 
@@ -230,7 +228,6 @@ export class GameEngine {
 
   /** Configure the run from the Lobby: selected character + owned perks. */
   public setLoadout(config: {
-    characterId: CharacterId;
     maxHp: number;
     speedMultiplier: number;
     damageMultiplier: number;
@@ -238,7 +235,6 @@ export class GameEngine {
     theme: CharacterTheme;
     applyPerks: (stats: PlayerStats) => void;
   }) {
-    this.characterId = config.characterId;
     this.characterBaseHp = config.maxHp;
     this.characterSpeedMultiplier = config.speedMultiplier;
     this.characterDamageMultiplier = config.damageMultiplier;
@@ -250,7 +246,6 @@ export class GameEngine {
   private perkApplier: ((stats: PlayerStats) => void) | null = null;
   private dungeonDifficulty: number = 1;
   private pendingDifficulty: number | null = null;
-  private characterId: CharacterId = 'blade';
   private characterStartingWeapons: WeaponType[] = ['spinning_blades', 'arcane_burst'];
   private characterTheme: CharacterTheme = {
     cape: '#0f172a',

@@ -5,19 +5,14 @@ import {
   Timer,
   Skull,
   Sparkles,
-  Medal,
   Crown,
-  ChevronDown,
-  User,
-  Shield,
-  Flame,
 } from 'lucide-react';
 import {
   AVATAR_OPTIONS,
   TIERS_CONFIG,
   playerAuthService,
 } from '../services/playerAuthService';
-import { LeaderboardFilter, LeaderboardRecord } from '../types';
+import { LeaderboardFilter } from '../types';
 
 interface LeaderboardModalProps {
   isOpen: boolean;

@@ -4,7 +4,6 @@ import {
   Minimize,
   Pause,
   Skull,
-  Timer,
   Volume2,
   VolumeX,
   Sparkles,

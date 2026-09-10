@@ -2,10 +2,7 @@ import React, { useState } from 'react';
 import {
   X,
   User,
-  Shield,
-  KeyRound,
   Trophy,
-  Swords,
   Timer,
   Skull,
   Sparkles,
@@ -21,8 +18,6 @@ import {
   Mail,
   ExternalLink,
   Zap,
-  RotateCcw,
-  Info,
 } from 'lucide-react';
 import {
   AVATAR_OPTIONS,
@@ -58,7 +53,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [regPin, setRegPin] = useState('');
   const [regAvatar, setRegAvatar] = useState<PlayerAvatar>('blade');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
@@ -77,7 +71,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleGoogleSignIn = async () => {
     setIsGoogleLoading(true);
     setErrorMsg(null);
-    setAuthErrorCode(null);
     setSuccessMsg(null);
     try {
       const res = await playerAuthService.loginWithGoogleAccount();
@@ -93,13 +86,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         }, 900);
       } else {
         setErrorMsg(res.error || 'تعذر تسجيل الدخول بحساب Google');
-        setAuthErrorCode(res.errorCode || 'auth_failed');
       }
     } catch (err: any) {
       setErrorMsg(
         'حدث خطأ أثناء محاولة الاتصال بخدمة Google. غالباً ما يكون ذلك بسبب فتح اللعبة داخل نافذة المعاينة (iFrame) أو قيود النطاقات التجريبية.'
       );
-      setAuthErrorCode('auth_exception');
     } finally {
       setIsGoogleLoading(false);
     }
@@ -107,7 +98,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleInstantHero = () => {
     setErrorMsg(null);
-    setAuthErrorCode(null);
     const chosenName = regUsername.trim() || loginUsername.trim() || 'بطل الصمود';
     const res = playerAuthService.register(chosenName, '', regAvatar);
     if (res.success && res.account) {
