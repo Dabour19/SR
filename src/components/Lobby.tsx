@@ -29,9 +29,8 @@ import {
   RARITY_CONFIG,
   getCharacter,
 } from '../services/lobbyService';
-import type { CrateId, LobbyState, FriendDoc } from '../types';
+import type { CrateId, LobbyState, FriendDoc, TeamDoc } from '../types';
 import { LobbyHub, type HubStationId } from './LobbyHub';
-import { DUNGEON_DIFFICULTY } from '../game/cityScene';
 import { CrateOpeningModal } from './CrateOpeningModal';
 import { HelpModal } from './HelpModal';
 import { playerAuthService, determineTier } from '../services/playerAuthService';
@@ -45,13 +44,12 @@ import {
   CHARACTER_EXCLUSIVE_WEAPON,
 } from '../game/skillTree';
 import { WEAPON_REGISTRY } from '../game/weapons';
+import { getDungeonGate, updateDungeonSpawns } from '../game/cityScene';
 
-/** Minimum character level required to enter each dungeon gate. */
-const DUNGEON_REQUIRED_LEVEL: Partial<Record<HubStationId, number>> = {
-  dungeon1: 1,
-  dungeon2: 4,
-  dungeon3: 8,
-};
+/**
+ * Random dungeon gates (ids like 'dg1'...'dg10') live in cityScene.ts —
+ * their tier carries the difficulty multiplier and minimum level.
+ */
 
 type Tab = 'hub' | 'home' | 'characters' | 'skills' | 'shop' | 'crates' | 'friends';
 
@@ -86,6 +84,8 @@ function useFriends() {
   return {
     friends: friendsService.getFriends(),
     requests: friendsService.getRequests(),
+    team: friendsService.getTeam(),
+    invites: friendsService.getInvites(),
   };
 }
 
@@ -95,9 +95,61 @@ function formatTime(secs: number) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onToggleMute }: LobbyProps) {
+export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onToggleMute }: LobbyProps) {
   const state = useLobbyState();
-  const { friends, requests } = useFriends();
+  const { friends, requests, team, invites } = useFriends();
+  const user = playerAuthService.getCurrentUser();
+  const myId = user.id;
+  const isHost = !!team && team.hostId === myId;
+
+  /* Keep my team row in sync when I change character. */
+  useEffect(() => {
+    friendsService.setMyCharacter(state.selectedCharacter);
+  }, [team?.code, state.selectedCharacter]);
+
+  /* Team actions */
+  const handleCreateTeam = async () => {
+    const res = await friendsService.createTeam(state.selectedCharacter);
+    showToast(res.success ? `تم إنشاء الفريق! الرمز: ${res.code} 🎉` : res.error || 'فشل إنشاء الفريق');
+  };
+  const handleJoinTeam = async () => {
+    if (!joinCode.trim()) return;
+    const res = await friendsService.joinTeam(joinCode, state.selectedCharacter);
+    showToast(res.success ? 'تم الانضمام للفريق ✅' : res.error || 'فشل الانضمام');
+    if (res.success) setJoinCode('');
+  };
+  const handleTeamStart = async () => {
+    if (!team) return;
+    if (!team.members.every((m) => m.ready || m.isHost)) {
+      showToast('في انتظار جهوزية جميع الأعضاء ⏳');
+      return;
+    }
+    const res = await friendsService.startMatch();
+    showToast(res.success ? 'بدأت المعركة التعاونية! ⚔️' : res.error || 'فشل بدء المعركة');
+    if (res.success) {
+      /* Co-op runs use the same difficulty formula as the dungeon gates,
+         derived from the selected character's level — entering a dungeon
+         without a portal stays consistent with gated entries. */
+      const lvl = lobbyService.getProgress(state.selectedCharacter).level;
+      onStartGame(+(1 + (lvl - 1) * 0.28).toFixed(2));
+    }
+  };
+
+  /* Co-op match start watcher: all members auto-launch when the host starts. */
+  useEffect(() => {
+    if (team?.matchStartedAt) {
+      friendsService.clearMatchStart();
+      const lvl = lobbyService.getProgress(state.selectedCharacter).level;
+      onStartGame(+(1 + (lvl - 1) * 0.28).toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [team?.matchStartedAt]);
+
+  const handleInviteFriend = async (f: FriendDoc) => {
+    const other = f.requesterId === user.id ? { id: f.targetId, name: f.targetName } : { id: f.requesterId, name: f.requesterName };
+    const res = await friendsService.inviteToTeam(f);
+    showToast(res.success ? `تمت دعوة ${other.name} للفريق ✅` : res.error || 'فشل إرسال الدعوة');
+  };
   const [tab, setTab] = useState<Tab>('hub');
   const [toast, setToast] = useState<string | null>(null);
   const [openingCrate, setOpeningCrate] = useState<CrateId | null>(null);
@@ -105,9 +157,14 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
   const [searchName, setSearchName] = useState('');
   const [joinCode, setJoinCode] = useState('');
 
-  const user = playerAuthService.getCurrentUser();
   const tier = determineTier(user.rankScore);
   const selectedChar = getCharacter(state.selectedCharacter);
+
+  /* Seed/refresh dungeon portals for the selected character's level zones. */
+  useEffect(() => {
+    updateDungeonSpawns(lobbyService.getProgress(state.selectedCharacter).level);
+  }, [state.selectedCharacter]);
+
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -157,35 +214,26 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
       onStartGame();
       return;
     }
-    /* Dungeon gates in the wilderness: start the battle with a difficulty modifier.
+    /* Dungeon gates in the wilderness: start the battle with the gate's tier difficulty.
        Gates are gated behind the selected character's level. */
-    if (id === 'dungeon1' || id === 'dungeon2' || id === 'dungeon3') {
-      const required = DUNGEON_REQUIRED_LEVEL[id] ?? 1;
+    const gate = getDungeonGate(id);
+    if (gate) {
+      const required = gate.tier.minLevel;
       const charLevel = lobbyService.getProgress(state.selectedCharacter).level;
       if (charLevel < required) {
         showToast(`هذا الدنجن يتطلب مستوى الشخصية ${required} (مستواك: ${charLevel}) 🔒`);
         return;
       }
-      onStartGame(DUNGEON_DIFFICULTY[id] ?? 1);
+      onStartGame(gate.tier.difficulty);
       return;
     }
     if (id === 'shop' || id === 'characters' || id === 'crates' || id === 'friends') {
-      setTab(id);
+      setTab(id as Tab);
       return;
     }
     /* leaderboard / profile / help are overlays inside the hub — no tab change. */
     if (id === 'help') setShowHelp(true);
   };
-
-  const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
-    { id: 'hub', label: 'الساحة', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'home', label: 'الرئيسية', icon: <User className="w-4 h-4" /> },
-    { id: 'characters', label: 'الشخصيات', icon: <Users className="w-4 h-4" /> },
-    { id: 'skills', label: 'المهارات', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'shop', label: 'المتجر', icon: <Store className="w-4 h-4" /> },
-    { id: 'crates', label: 'الصناديق', icon: <Package className="w-4 h-4" /> },
-    { id: 'friends', label: 'الأصدقاء', icon: <UserPlus className="w-4 h-4" /> },
-  ];
 
   const homeStats = [
     { icon: <Timer className="w-4 h-4" />, label: 'أطول صمود', value: formatTime(user.stats.bestSurvivalTime), color: 'text-amber-300', bg: 'bg-amber-500/15 border-amber-500/30' },
@@ -279,31 +327,7 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
             >
               <Trophy className="w-4 h-4 text-yellow-400" />
             </button>
-            <button
-              onClick={onBack}
-              className="px-3 py-2 rounded-xl bg-[#0f172a] hover:bg-[#334155] text-slate-300 border border-[#334155] text-xs font-bold transition cursor-pointer"
-            >
-              رجوع ←
-            </button>
           </div>
-        </div>
-
-        {/* Tabs (hidden in hub — arena is fullscreen) */}
-        <div className="flex gap-2 p-3 pb-0 shrink-0">
-          {tabs.filter((t) => t.id !== 'hub').map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-t-xl text-xs sm:text-sm font-bold transition cursor-pointer border-b-2 ${
-                tab === t.id
-                  ? 'bg-[#0f172a] text-cyan-300 border-cyan-400'
-                  : 'bg-transparent text-slate-400 border-transparent hover:text-slate-200'
-              }`}
-            >
-              {t.icon}
-              <span>{t.label}</span>
-            </button>
-          ))}
         </div>
 
         {/* Content (panel mode — hub is fullscreen separately) */}
@@ -456,6 +480,38 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
                     ))}
                   </div>
                 </div>
+                )}
+
+              {/* Incoming team invites */}
+              {invites.length > 0 && (
+                <div className="p-3.5 rounded-2xl bg-[#1e293b] border border-emerald-500/40">
+                  <div className="text-xs font-bold text-emerald-300 mb-2">دعوات الفريق ({invites.length})</div>
+                  <div className="space-y-2">
+                    {invites.map((inv: any) => (
+                      <div key={inv.id} className="flex items-center gap-2 p-2 rounded-xl bg-[#0f172a] border border-[#334155]">
+                        <span className="flex-1 text-sm font-bold text-white truncate">
+                          {inv.hostName} يدعوك للفريق ({inv.code})
+                        </span>
+                        <button
+                          onClick={async () => {
+                            const res = await friendsService.joinTeam(inv.code, state.selectedCharacter);
+                            showToast(res.success ? 'تم الانضمام للفريق ✅' : res.error || 'فشل الانضمام');
+                            friendsService.dismissInvite(inv.id);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-bold hover:bg-emerald-500/30 transition cursor-pointer"
+                        >
+                          قبول
+                        </button>
+                        <button
+                          onClick={() => friendsService.dismissInvite(inv.id)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-bold hover:bg-rose-500/30 transition cursor-pointer"
+                        >
+                          رفض
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {/* Friends list */}
@@ -478,6 +534,15 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
                           </div>
                           <span className="flex-1 text-sm font-bold text-white truncate">{other.name}</span>
                           <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-950 text-emerald-400 border border-emerald-700 font-bold">صديق</span>
+                          {team && team.members.length < 4 && !team.members.some((m) => m.id === (f.requesterId === user.id ? f.targetId : f.requesterId)) && (
+                            <button
+                              onClick={() => handleInviteFriend(f)}
+                              title="دعوة للفريق"
+                              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                            >
+                              <UserPlus className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           <button
                             onClick={() => { friendsService.removeFriend(f); showToast('تمت إزالة الصديق'); }}
                             title="إزالة"
@@ -488,6 +553,102 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+
+              {/* ==================== TEAM / CO-OP ==================== */}
+              <div className="p-3.5 rounded-2xl bg-[#1e293b] border-emerald-500/40">
+                <div className="text-xs font-bold text-emerald-300 mb-2 flex items-center gap-1.5">
+                  <Users className="w-4 h-4" /> الفريق (لعب تعاوني — حتى 4 لاعبين)
+                </div>
+
+                {!team ? (
+                  <div className="space-y-3">
+                    <button
+                      onClick={handleCreateTeam}
+                      className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-900 text-xs font-black transition cursor-pointer"
+                    >
+                      ➕ إنشاء فريق
+                    </button>
+                    <div className="flex gap-2">
+                      <input
+                        value={joinCode}
+                        onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                        onKeyDown={(e) => e.key === 'Enter' && handleJoinTeam()}
+                        placeholder="رمز الانضمام (6 أحرف)..."
+                        maxLength={6}
+                        className="flex-1 px-3 py-2 rounded-xl bg-[#0f172a] border-[#334155] text-sm text-white placeholder:text-slate-500 outline-none focus:border-emerald-400/60 font-mono tracking-widest text-center uppercase"
+                      />
+                      <button
+                        onClick={handleJoinTeam}
+                        className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-900 text-xs font-black transition cursor-pointer"
+                      >
+                        انضمام
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Join code */}
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 px-3 py-2 rounded-xl bg-[#0f172a] border-emerald-500/40 text-center">
+                        <div className="text-[10px] text-slate-400">رمز الفريق — شاركه مع أصدقائك</div>
+                        <div className="font-mono font-black text-emerald-300 text-lg tracking-[0.3em]">{team.code}</div>
+                      </div>
+                      <button
+                        onClick={() => { navigator.clipboard?.writeText(team.code); showToast('تم نسخ الرمز 📋'); }}
+                        className="px-3 py-2 rounded-xl bg-[#0f172a] hover:bg-[#334155] text-emerald-300 border-[#334155] text-xs font-bold transition cursor-pointer"
+                      >
+                        نسخ
+                      </button>
+                      <button
+                        onClick={() => { friendsService.leaveTeam(); showToast('غادرت الفريق'); }}
+                        className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border-rose-500/30 text-xs font-bold transition cursor-pointer"
+                      >
+                        خروج
+                      </button>
+                    </div>
+
+                    {/* Members */}
+                    <div className="space-y-1.5">
+                      {team.members.map((m) => (
+                        <div key={m.id} className="flex items-center gap-2 p-2 rounded-xl bg-[#0f172a] border-[#334155]">
+                          <div className="text-xl w-8 h-8 flex items-center justify-center rounded-lg bg-[#1e293b] border-[#334155]">
+                            {AVATAR_ICONS[m.avatar] || '🎮'}
+                          </div>
+                          <span className="flex-1 text-sm font-bold text-white truncate">
+                            {m.name}{m.id === myId ? ' (أنت)' : ''}
+                          </span>
+                          {m.isHost && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border-amber-500/30 font-bold">قائد 👑</span>}
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-md border font-bold ${m.ready || m.isHost ? 'bg-emerald-950 text-emerald-400 border-emerald-700' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                            {m.ready || m.isHost ? 'جاهز' : 'غير جاهز'}
+                          </span>
+                          <span className="text-lg" title={getCharacter(m.selectedCharacter).nameAr}>{getCharacter(m.selectedCharacter).emoji}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Ready / start buttons */}
+                    <div className="flex gap-2">
+                      {!isHost && (
+                        <button
+                          onClick={() => friendsService.setReady(!team.members.find((m) => m.id === myId)?.ready)}
+                          className="flex-1 py-2.5 rounded-xl bg-[#0f172a] hover:bg-[#334155] text-emerald-300 border-emerald-500/40 text-xs font-black transition cursor-pointer"
+                        >
+                          {team.members.find((m) => m.id === myId)?.ready ? 'إلغاء الجاهزية' : 'أنا جاهز ✅'}
+                        </button>
+                      )}
+                      {isHost && (
+                        <button
+                          onClick={handleTeamStart}
+                          disabled={team.members.length < 1}
+                          className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-900 text-xs font-black transition cursor-pointer"
+                        >
+                          ⚔️ ابدأ المعركة التعاونية
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -768,19 +929,13 @@ export function Lobby({ onBack, onStartGame, onOpenAuth, onOpenLeaderboard, isMu
           )}
         </div>
 
-        {/* Footer: Start */}
-        <div className="p-3 border-t border-[#334155] shrink-0 flex gap-2">
+        {/* Footer: back to arena hub */}
+        <div className="p-3 border-t border-[#334155] shrink-0">
           <button
             onClick={() => setTab('hub')}
-            className="px-4 py-3 rounded-2xl bg-[#0f172a] hover:bg-[#334155] text-cyan-300 border border-cyan-500/40 font-black text-sm transition cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl bg-[#0f172a] hover:bg-[#334155] text-cyan-300 border border-cyan-500/40 font-black text-sm transition cursor-pointer"
           >
             🗺️ الساحة
-          </button>
-          <button
-            onClick={() => onStartGame()}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-black text-base shadow-[0_0_20px_rgba(34,211,238,0.4)] transition cursor-pointer"
-          >
-            ▶ ابدأ المعركة بالشخصية المختارة
           </button>
         </div>
       </div>

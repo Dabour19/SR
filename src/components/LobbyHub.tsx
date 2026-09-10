@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Coins, Volume2, VolumeX, HelpCircle } from 'lucide-react';
 import type { LobbyState } from '../types';
-import { getCharacter, CHARACTERS } from '../services/lobbyService';
+import { getCharacter, CHARACTERS, lobbyService } from '../services/lobbyService';
 import { drawHeroSprite } from '../game/characterSprite';
 import { hubPresence, type HubPlayer } from '../services/hubPresence';
 import { playerAuthService } from '../services/playerAuthService';
 import {
-  WORLD_W, WORLD_H, HORIZON_Y, BUILDINGS, FOUNTAIN, LAMPS, TREES, BENCHES, PLAYER_SPAWN, CITY_EDGE,
+  WORLD_W, WORLD_H, HORIZON_Y, BUILDINGS, ALL_BUILDINGS, FOUNTAIN, LAMPS, TREES, BENCHES, PLAYER_SPAWN, CITY_EDGE,
+  updateDungeonSpawns,
   type Building, type HubStationId,
   resolveMove, nearestBuilding, buildingAtPoint, doorStand, nightFactor, blocked,
   drawSky, drawSkyline, drawGround, drawFountain, drawTree, drawLamp, drawLampGlow, drawBench,
@@ -113,6 +114,9 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
   pendingRef.current = pendingRequests;
   const onStationRef = useRef(onStation);
   onStationRef.current = onStation;
+  /** Current character level — used by the portal spawner inside the render loop. */
+  const levelRef = useRef(1);
+  levelRef.current = lobbyService.getProgress(state.selectedCharacter).level;
 
   const [near, setNear] = useState<Building | null>(null);
   const [onlineCount, setOnlineCount] = useState(1);
@@ -152,7 +156,7 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
    *  Wilderness buildings (dungeons) are behind the city wall, so route
    *  through the gate opening first instead of a straight line. */
   const travelTo = useCallback((id: HubStationId) => {
-    const b = BUILDINGS.find((x) => x.id === id);
+    const b = ALL_BUILDINGS.find((x) => x.id === id);
     if (!b) return;
     const d = doorStand(b);
     waypointQueue.current = [];
@@ -240,6 +244,7 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
     let alive = true;
     let last = performance.now();
     let lastNearId: string | null = null;
+    let lastSpawnCheck = 0;
     const t0 = performance.now();
 
     const step = (dx: number, dy: number, dt: number) => {
@@ -334,6 +339,12 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
 
       updateNpcs(dt);
 
+      /* Periodic portal spawner: expire old gates & randomly spawn new ones. */
+      if (t - lastSpawnCheck > 4000) {
+        lastSpawnCheck = t;
+        updateDungeonSpawns(levelRef.current);
+      }
+
       // nearest building (state update only on change)
       const nb = nearestBuilding(posRef.current.x, posRef.current.y);
       const nbId = nb?.id ?? null;
@@ -385,13 +396,14 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
       const isMoving = performance.now() - lastMoveTime.current < 200;
       const me = posRef.current;
 
-      for (const b of BUILDINGS) {
+      for (const b of ALL_BUILDINGS) {
         items.push({
           y: b.y - 6,
           draw: () => drawBuilding(ctx, b, {
             t: time, night,
             highlighted: nbId === b.id,
             badge: b.id === 'friends' ? pendingRef.current : undefined,
+            now: Date.now(),
           }),
         });
       }
@@ -458,11 +470,13 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
         ctx.fillRect(0, HORIZON_Y, WORLD_W, WORLD_H - HORIZON_Y);
         ctx.globalCompositeOperation = 'lighter';
         for (const l of LAMPS) drawLampGlow(ctx, l, night);
-        // gate + fountain glow
-        const gate = BUILDINGS.find((b) => b.id === 'start')!;
-        const gg = ctx.createRadialGradient(gate.x, gate.y - 60, 10, gate.x, gate.y - 60, 160);
-        gg.addColorStop(0, `rgba(244,63,94,${0.25 * night})`); gg.addColorStop(1, 'rgba(244,63,94,0)');
-        ctx.fillStyle = gg; ctx.fillRect(gate.x - 160, gate.y - 220, 320, 320);
+        // dungeon gates + fountain glow
+        for (const dg of ALL_BUILDINGS) {
+          if (dg.kind !== 'dungeon') continue;
+          const gg = ctx.createRadialGradient(dg.x, dg.y - 60, 10, dg.x, dg.y - 60, 160);
+          gg.addColorStop(0, `rgba(244,63,94,${0.25 * night})`); gg.addColorStop(1, 'rgba(244,63,94,0)');
+          ctx.fillStyle = gg; ctx.fillRect(dg.x - 160, dg.y - 220, 320, 320);
+        }
         const fg = ctx.createRadialGradient(FOUNTAIN.x, FOUNTAIN.y, 5, FOUNTAIN.x, FOUNTAIN.y, 110);
         fg.addColorStop(0, `rgba(125,211,252,${0.25 * night})`); fg.addColorStop(1, 'rgba(125,211,252,0)');
         ctx.fillStyle = fg; ctx.fillRect(FOUNTAIN.x - 110, FOUNTAIN.y - 110, 220, 220);
@@ -558,6 +572,12 @@ export function LobbyHub({ state, onStation, onOpenAuth, isMuted, onToggleMute, 
         >
           <span className="text-lg">{getCharacter(state.selectedCharacter).emoji}</span>
           <span className="text-xs font-black text-white max-w-[90px] truncate">{user.username}</span>
+          <span
+            className="px-1.5 py-0.5 rounded-md bg-cyan-500/20 border border-cyan-400/50 text-[10px] font-black text-cyan-300 font-mono"
+            title="مستوى الشخصية"
+          >
+            Lv.{lobbyService.getProgress(state.selectedCharacter).level}
+          </span>
         </button>
         <div className="flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-amber-500/20 border border-amber-400/50 pointer-events-none">
           <Coins className="w-4 h-4 text-amber-400" />

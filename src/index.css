@@ -106,3 +106,73 @@
     transform: scale(1.4);
   }
 }
+
+/* ===== Crate opening enhancements ===== */
+
+/* Full-screen white flash the moment the reel lands */
+@keyframes land-flash {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Screen shake on landing */
+@keyframes screen-shake {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  15% {
+    transform: translate(-7px, 4px);
+  }
+  30% {
+    transform: translate(6px, -5px);
+  }
+  45% {
+    transform: translate(-4px, 3px);
+  }
+  60% {
+    transform: translate(4px, 2px);
+  }
+  75% {
+    transform: translate(-2px, -2px);
+  }
+}
+
+/* Reward card pulsing halo that scales out repeatedly */
+@keyframes halo-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* Falling confetti burst on reveal */
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-40px) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(320px) rotate(540deg);
+    opacity: 0;
+  }
+}
+
+/* Slow idle float for the earned item */
+@keyframes item-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}

@@ -6,8 +6,7 @@
  * Every building corresponds to a lobby station (shop, characters, ...).
  */
 
-export const WORLD_W = 3600;
-export const WORLD_H = 900;
+/* WORLD_W is defined below, after the dungeon zone constants. */
 /** Everything above this y is sky / distant skyline. */
 export const HORIZON_Y = 170;
 
@@ -27,6 +26,55 @@ export type BuildingKind = 'house' | 'tower' | 'gate' | 'board' | 'kiosk' | 'dun
 
 /** Outside the city (x > CITY_EDGE) lies the open wilderness with dungeon gates. */
 export const CITY_EDGE = 1240;
+
+/* ==================== DUNGEON ZONES ====================
+ * The wilderness is divided into biome zones of 5 levels each (1-5, 6-10,
+ * ... 66-70). Each zone has its own nature/biome, and dungeon portals spawn
+ * RANDOMLY inside their matching zone for a limited time, then vanish.
+ */
+
+export const MAX_DUNGEON_LEVEL = 70;
+export const ZONE_LEVEL_SPAN = 5;
+/** Width (world px) of each zone. */
+export const ZONE_W = 640;
+/** Number of zones (1-5, 6-10, ... 66-70). */
+export const ZONE_COUNT = MAX_DUNGEON_LEVEL / ZONE_LEVEL_SPAN; // 14
+
+export interface DungeonZone {
+  index: number;
+  minLevel: number;
+  maxLevel: number;
+  x0: number;
+  x1: number;
+}
+
+export const DUNGEON_ZONES: DungeonZone[] = Array.from({ length: ZONE_COUNT }, (_, i) => ({
+  index: i,
+  minLevel: 1 + i * ZONE_LEVEL_SPAN,
+  maxLevel: (1 + i) * ZONE_LEVEL_SPAN,
+  x0: CITY_EDGE + i * ZONE_W,
+  x1: CITY_EDGE + (i + 1) * ZONE_W,
+}));
+
+export function zoneForLevel(level: number): DungeonZone {
+  const i = Math.min(ZONE_COUNT - 1, Math.max(0, Math.floor((Math.max(1, level) - 1) / ZONE_LEVEL_SPAN)));
+  return DUNGEON_ZONES[i];
+}
+
+/** Biome palettes cycled across zones: meadow, forest, swamp, desert, tundra, ashlands. */
+const ZONE_BIOMES = [
+  { ground: '#4d9a4d', groundDark: '#3c7f3c', accent: '#2f6b2f' },   // مرج أخضر
+  { ground: '#2e6b34', groundDark: '#1f5226', accent: '#163d1a' },   // غابة داكنة
+  { ground: '#4c7a4a', groundDark: '#375c38', accent: '#2a4d33' },   // مستنقع
+  { ground: '#c2a35c', groundDark: '#a68a49', accent: '#8a6f38' },   // صحراء
+  { ground: '#bcd3d8', groundDark: '#9fb9c0', accent: '#7d98a0' },   // تندرا ثلجية
+  { ground: '#5a4a4a', groundDark: '#413434', accent: '#332424' },   // أراضٍ رمادية بركانية
+];
+export function biomeForZone(i: number) { return ZONE_BIOMES[i % ZONE_BIOMES.length]; }
+
+/** Total world width = city + all dungeon zones. */
+export const WORLD_W = CITY_EDGE + ZONE_COUNT * ZONE_W; // 10200
+export const WORLD_H = 900;
 
 /* ==================== RANDOM DUNGEON GATES ====================
  * Dungeons are NOT fixed buildings anymore. Each session, a set of random
@@ -57,13 +105,6 @@ export const DUNGEON_TIERS: DungeonTier[] = [
   { tier: 6, nameAr: 'بوابة أسطورية', emoji: '🐉', color: '#ef4444', difficulty: 6,   minLevel: 18, weight: 4 },
 ];
 
-function pickWeightedTier(): DungeonTier {
-  const total = DUNGEON_TIERS.reduce((s, t) => s + t.weight, 0);
-  let r = Math.random() * total;
-  for (const t of DUNGEON_TIERS) { r -= t.weight; if (r <= 0) return t; }
-  return DUNGEON_TIERS[0];
-}
-
 export interface Building {
   id: HubStationId;
   labelAr: string;
@@ -81,6 +122,16 @@ export interface Building {
   wallH: number;
   /** Interaction radius (world px) from the door. */
   range: number;
+  /** For dungeon gates: the required character level, shown above the gate. */
+  levelReq?: number;
+  /** For dungeon gates: epoch ms when the portal vanishes. */
+  expiresAt?: number;
+}
+
+/** Look up the tier visuals (name/color/emoji) for a raw dungeon level. */
+function tierForLevel(level: number): DungeonTier {
+  const idx = Math.min(DUNGEON_TIERS.length - 1, Math.floor((Math.max(1, level) - 1) / 12));
+  return DUNGEON_TIERS[idx];
 }
 
 /** Metadata for a generated gate id (e.g. 'dg4'), or null if not a gate. */
@@ -91,36 +142,67 @@ export function getDungeonGate(id: HubStationId): (Building & { tier: DungeonTie
 /** All generated random gates (with their tier attached). */
 export const DUNGEONS: Array<Building & { tier: DungeonTier }> = [];
 
-/** Generate a fresh set of random dungeon portals in the wilderness. */
-export function regenerateDungeons(count = 10) {
-  DUNGEONS.length = 0;
-  const placed: { x: number; y: number }[] = [];
-  let guard = 0;
-  while (DUNGEONS.length < count && guard++ < 400) {
-    const x = CITY_EDGE + 180 + Math.random() * (WORLD_W - CITY_EDGE - 340);
-    const y = HORIZON_Y + 130 + Math.random() * (WORLD_H - HORIZON_Y - 190);
-    if (placed.some((p) => Math.hypot(p.x - x, (p.y - y) * 1.4) < 220)) continue;
-    const tier = pickWeightedTier();
-    DUNGEONS.push({
-      id: `dg${DUNGEONS.length + 1}`,
-      labelAr: `${tier.nameAr} — مستوى ${tier.tier}`,
-      actionAr: `${tier.emoji} ادخل الدنجن (قوة ${tier.tier})`,
-      emoji: tier.emoji,
-      color: tier.color,
-      kind: 'dungeon',
-      x: Math.round(x),
-      y: Math.round(y),
-      w: 150,
-      h: 56,
-      wallH: 100,
-      range: 80,
-      tier,
-    });
-    placed.push({ x, y });
-  }
+/** City buildings + the currently generated random dungeon gates. */
+export const ALL_BUILDINGS: Building[] = [];
+
+function syncAllBuildings() {
+  ALL_BUILDINGS.length = 0;
+  ALL_BUILDINGS.push(...BUILDINGS, ...DUNGEONS);
 }
 
-regenerateDungeons();
+/** How long a portal stays on the map (ms) before vanishing. */
+const GATE_LIFETIME_MS = () => 60_000 + Math.random() * 90_000; // 1–2.5 min
+/** Gates per matching zone active at once. */
+const GATES_PER_ZONE = 2;
+/** Zones around the player's level that may spawn gates (±1 zone). */
+const ZONE_REACH = 1;
+
+function spawnGateInZone(zone: DungeonZone, now: number) {
+  const tier = tierForLevel(zone.minLevel);
+  const lvl = zone.minLevel + Math.floor(Math.random() * (zone.maxLevel - zone.minLevel + 1));
+  /* Difficulty grows with the dungeon level itself. */
+  const difficulty = +(1 + (lvl - 1) * 0.28).toFixed(2);
+  DUNGEONS.push({
+    id: `dg${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`,
+    labelAr: `${tier.nameAr} — مستوى ${lvl}`,
+    actionAr: `${tier.emoji} ادخل الدنجن (مستوى ${lvl} • قوة ${difficulty})`,
+    emoji: tier.emoji,
+    color: tier.color,
+    kind: 'dungeon',
+    x: Math.round(zone.x0 + 140 + Math.random() * (ZONE_W - 280)),
+    y: Math.round(HORIZON_Y + 130 + Math.random() * (WORLD_H - HORIZON_Y - 190)),
+    w: 150,
+    h: 56,
+    wallH: 100,
+    range: 80,
+    levelReq: zone.minLevel,
+    expiresAt: now + GATE_LIFETIME_MS(),
+    tier: { ...tier, minLevel: zone.minLevel, difficulty },
+  });
+}
+
+/**
+ * Called periodically: removes expired portals and randomly spawns new ones
+ * inside the zones matching the player's level (and the neighbouring zones).
+ * Each portal lives for a limited time, then disappears.
+ */
+export function updateDungeonSpawns(playerLevel: number, now = Date.now()) {
+  /* 1) vanish expired gates */
+  for (let i = DUNGEONS.length - 1; i >= 0; i--) {
+    if ((DUNGEONS[i].expiresAt ?? Infinity) <= now) DUNGEONS.splice(i, 1);
+  }
+
+  /* 2) spawn randomly in eligible zones (player's zone ± reach) */
+  const myZone = zoneForLevel(playerLevel).index;
+  for (let zi = Math.max(0, myZone - ZONE_REACH); zi <= Math.min(ZONE_COUNT - 1, myZone + ZONE_REACH); zi++) {
+    const zone = DUNGEON_ZONES[zi];
+    const active = DUNGEONS.filter((d) => d.x >= zone.x0 && d.x < zone.x1).length;
+    if (active >= GATES_PER_ZONE) continue;
+    /* random chance so portals appear at unpredictable moments */
+    if (Math.random() < 0.45) spawnGateInZone(zone, now);
+  }
+  syncAllBuildings();
+}
 
 export interface Fountain { x: number; y: number; r: number }
 export interface Lamp { x: number; y: number }
@@ -142,15 +224,8 @@ export const BUILDINGS: Building[] = [
      randomly in the wilderness (see DUNGEONS / regenerateDungeons). */
 ];
 
-  /** City buildings + the currently generated random dungeon gates. */
-export const ALL_BUILDINGS: Building[] = [...BUILDINGS, ...DUNGEONS];
-
-/** City buildings + the currently generated random dungeon gates. */
-function syncAllBuildings() {
-  ALL_BUILDINGS.length = 0;
-  ALL_BUILDINGS.push(...BUILDINGS, ...DUNGEONS);
-}
-syncAllBuildings();
+/* Seed the first portals now that BUILDINGS exists. */
+updateDungeonSpawns(1);
 
 export const LAMPS: Lamp[] = [
   { x: 470, y: 430 }, { x: 730, y: 430 },
@@ -427,17 +502,25 @@ export function drawGround(ctx: CanvasRenderingContext2D, night: number) {
   ctx.fillStyle = lerpColor('#2f6b2f', '#0b1f12', night);
   ctx.fillRect(0, HORIZON_Y, WORLD_W, 14);
 
-  // Wilderness (x > CITY_EDGE): darker cursed ground + rocky patches
-  ctx.save();
-  ctx.fillStyle = lerpColor('rgba(24,28,42,0.35)', 'rgba(4,6,14,0.5)', night);
-  ctx.fillRect(CITY_EDGE, HORIZON_Y, WORLD_W - CITY_EDGE, WORLD_H - HORIZON_Y);
-  ctx.fillStyle = lerpColor('rgba(40,44,60,0.5)', 'rgba(8,10,20,0.6)', night);
-  for (let i = 0; i < 40; i++) {
-    const rx = CITY_EDGE + 40 + ((i * 761) % (WORLD_W - CITY_EDGE - 80));
-    const ry = HORIZON_Y + 60 + ((i * 389) % (WORLD_H - HORIZON_Y - 100));
-    ctx.beginPath(); ctx.ellipse(rx, ry, 10 + (i % 4) * 6, 4 + (i % 3) * 2, 0, 0, Math.PI * 2); ctx.fill();
+  // Wilderness (x > CITY_EDGE): one biome band per dungeon zone
+  for (let i = 0; i < DUNGEON_ZONES.length; i++) {
+    const z = DUNGEON_ZONES[i];
+    const b = biomeForZone(i);
+    const ground = lerpColor(b.ground, '#0b1020', night * 0.6);
+    const groundDark = lerpColor(b.groundDark, '#070b18', night * 0.6);
+    ctx.fillStyle = ground;
+    ctx.fillRect(z.x0, HORIZON_Y, ZONE_W, WORLD_H - HORIZON_Y);
+    // biome rocky / bush patches
+    ctx.fillStyle = groundDark;
+    for (let k = 0; k < 12; k++) {
+      const rx = z.x0 + 40 + ((k * 761 + i * 131) % (ZONE_W - 80));
+      const ry = HORIZON_Y + 60 + ((k * 389 + i * 97) % (WORLD_H - HORIZON_Y - 100));
+      ctx.beginPath(); ctx.ellipse(rx, ry, 10 + (k % 4) * 6, 4 + (k % 3) * 2, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    // subtle separator between zones
+    ctx.fillStyle = lerpColor(b.accent, '#05070f', night * 0.6);
+    ctx.fillRect(z.x1 - 3, HORIZON_Y, 6, WORLD_H - HORIZON_Y);
   }
-  ctx.restore();
 
   // City wall separating town from the wilderness (with an opening as the road)
   drawCityWall(ctx, night);
@@ -619,10 +702,18 @@ export interface BuildingDrawOpts {
   highlighted: boolean;
   /** Optional numeric badge (e.g. pending friend requests). */
   badge?: number;
+  /** Current epoch ms — used for portal expiry fading. */
+  now?: number;
 }
 
 export function drawBuilding(ctx: CanvasRenderingContext2D, b: Building, o: BuildingDrawOpts) {
   ctx.save();
+  /* Portals fade out over their last 5 seconds before vanishing. */
+  if (b.kind === 'dungeon' && typeof b.expiresAt === 'number' && typeof o.now === 'number') {
+    const remaining = b.expiresAt - o.now;
+    if (remaining <= 0) { ctx.restore(); return; }
+    ctx.globalAlpha = Math.min(1, remaining / 5000);
+  }
   ctx.translate(b.x, b.y);
   // ground shadow
   ctx.fillStyle = 'rgba(0,0,0,0.28)';
@@ -988,6 +1079,28 @@ function drawDungeon(ctx: CanvasRenderingContext2D, b: Building, o: BuildingDraw
   });
 
   drawSign(ctx, b, top - 12, o, true);
+
+  /* Required-level pill floating above the gate sign. */
+  if (typeof b.levelReq === 'number') {
+    const pillY = top - 56 + Math.sin(o.t * 2.2) * 3;
+    const text = `⬆ مستوى ${b.levelReq}+`;
+    ctx.save();
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const pw = ctx.measureText(text).width + 24;
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = 'rgba(15,23,42,0.92)';
+    rr(ctx, -pw / 2, pillY - 11, pw, 22, 11); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#f43f5e';
+    ctx.lineWidth = 1.5;
+    rr(ctx, -pw / 2, pillY - 11, pw, 22, 11); ctx.stroke();
+    ctx.fillStyle = '#fda4af';
+    ctx.fillText(text, 0, pillY + 1);
+    ctx.restore();
+  }
 }
 
 /** Emoji + Arabic label sign above a building. */

@@ -19,7 +19,9 @@ import {
 } from '../types';
 import { ObjectPoolSystem } from './objectPool';
 import { getCurrentWave, WAVE_SCHEDULE } from './waves';
-import { DUNGEON_DIFFICULTY, type HubStationId } from './cityScene';
+import { drawHeroSprite } from './characterSprite';
+import { runPresence } from '../services/runPresence';
+
 
 export interface GameEngineCallbacks {
   onLevelUp: (level: number) => void;
@@ -396,7 +398,7 @@ export class GameEngine {
    * happens in `initNewGame()` where `setWorldDifficulty` re-seeds the world.
    */
   public setPendingDifficulty(difficulty: number) {
-    const clamped = Math.max(1, Math.min(10, Math.floor(difficulty)));
+    const clamped = Math.max(1, Math.min(10, difficulty));
     this.dungeonDifficulty = clamped;
     this.pendingDifficulty = clamped;
   }
@@ -410,7 +412,7 @@ export class GameEngine {
    * enemies/pickups so the player never fights stale low-tier mobs.
    */
   public setWorldDifficulty(difficulty: number) {
-    const clamped = Math.max(1, Math.min(10, Math.floor(difficulty)));
+    const clamped = Math.max(1, Math.min(10, difficulty));
     this.dungeonDifficulty = clamped;
     this.pendingDifficulty = null;
     this.pool.resetAll();
@@ -522,8 +524,17 @@ export class GameEngine {
   }
 
   // --- Main Update Cycle ---
+  private presenceTimer: number = 0;
+
   private update(dt: number) {
     this.timeSurvived += dt;
+
+    // Co-op presence: publish my position ~2x/second so teammates see me.
+    this.presenceTimer -= dt;
+    if (this.presenceTimer <= 0) {
+      this.presenceTimer = 0.5;
+      runPresence.update(this.player.x, this.player.y);
+    }
 
     // HP regeneration
     if (this.stats.hp < this.stats.maxHp) {
@@ -540,9 +551,10 @@ export class GameEngine {
       this.hitVignetteTimer -= dt;
     }
 
-    // Screen shake decay
+    // Screen shake decay (faster falloff so late-stage hit chains don't keep
+    // the screen constantly rattling)
     if (this.shakeIntensity > 0) {
-      this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 25);
+      this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 34);
     }
 
     // 1. Update Player Movement
@@ -1156,8 +1168,25 @@ export class GameEngine {
       }
     }
 
+    // Performance cap: stop spawning when too many enemies are already on
+    // screen. Late waves push hundreds of entities; the AI + render cost per
+    // enemy is the main bottleneck, so we clamp the concurrent population
+    // (tighter limit on struggling devices via adaptive quality).
+    const maxActiveEnemies = this.pool.lowQuality ? 140 : 240;
+    let activeEnemyCount = 0;
+    for (let i = 0; i < this.pool.enemies.length; i++) {
+      if (this.pool.enemies[i].active) activeEnemyCount++;
+    }
+
     this.enemySpawnTimer += dt;
     const interval = 1 / wave.spawnRate;
+
+    // Population already at/over cap: drain the timer so we don't burst-spawn
+    // a backlog the moment space frees up, then bail out early.
+    if (activeEnemyCount >= maxActiveEnemies) {
+      this.enemySpawnTimer = Math.min(this.enemySpawnTimer, interval);
+      return;
+    }
 
     while (this.enemySpawnTimer >= interval) {
       this.enemySpawnTimer -= interval;
@@ -1697,7 +1726,13 @@ export class GameEngine {
   }
 
   private addScreenShake(amount: number) {
-    this.shakeIntensity = Math.min(18, this.shakeIntensity + amount);
+    // Tuned for advanced stages: repeated boss attacks (radial volleys,
+    // shockwaves...) used to stack up to an 18px jitter every few seconds and
+    // became nauseating. We now scale the raw amount down, clamp to a modest
+    // ceiling, and tone it down further at higher difficulty tiers.
+    const difficultyTone = Math.max(0.6, 1 - (this.dungeonDifficulty - 1) * 0.06);
+    const scaled = amount * 0.65 * difficultyTone;
+    this.shakeIntensity = Math.min(8, this.shakeIntensity + scaled);
   }
 
   private findClosestEnemy(x: number, y: number, maxDist: number): EnemyEntity | null {
@@ -1732,8 +1767,12 @@ export class GameEngine {
     ctx.save();
 
     // Apply Camera Translation with Screen Shake
-    const shakeX = (Math.random() - 0.5) * this.shakeIntensity;
-    const shakeY = (Math.random() - 0.5) * this.shakeIntensity;
+    // Smooth sinusoidal shake (feels like an impact wave) instead of random
+    // per-frame jitter, which reads as flicker and is disorienting in late
+    // stages where shakes fire every couple of seconds.
+    const shakePhase = this.timeSurvived * 55;
+    const shakeX = Math.sin(shakePhase * 1.3) * this.shakeIntensity;
+    const shakeY = Math.cos(shakePhase) * this.shakeIntensity * 0.7;
     const viewCenterX = width / 2;
     const viewCenterY = height / 2;
 
@@ -1899,6 +1938,9 @@ export class GameEngine {
 
     // 6.5 Draw Enemy Projectiles (Fireballs, Void Orbs, Toxic Orbs, Scythe Waves)
     this.renderEnemyProjectiles(ctx);
+
+    // 6.8 Draw co-op teammates (presence-based, rendered under the player)
+    this.renderTeammates(ctx);
 
     // 7. Draw Player Character
     this.renderPlayer(ctx);
@@ -2153,6 +2195,64 @@ export class GameEngine {
     }
   }
 
+  /** Co-op: draw team members synced via runPresence inside the dungeon. */
+  private renderTeammates(ctx: CanvasRenderingContext2D) {
+    const now = performance.now();
+    for (const t of runPresence.getOthers()) {
+      // skip stale or off-screen teammates
+      if (now - t.updatedAt > 12000) continue;
+      if (!this.isOnScreen(t.x, t.y, 80)) continue;
+
+      ctx.save();
+      ctx.translate(t.x, t.y);
+
+      // drop shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.beginPath();
+      ctx.ellipse(0, 16, 16, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // soft team highlight ring so they are easy to spot
+      ctx.save();
+      ctx.strokeStyle = '#34d399aa';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 5]);
+      ctx.lineDashOffset = -now / 50;
+      ctx.beginPath();
+      ctx.ellipse(0, 20, 26, 10, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      drawHeroSprite(
+        ctx,
+        {
+          theme: t.theme,
+          walkCycle: now / 100,
+          time: now / 1000,
+          facingLeft: false,
+          isMoving: true,
+        },
+        1.45
+      );
+      ctx.restore();
+
+      // name tag
+      ctx.save();
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(t.name).width + 16;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.fillRect(t.x - tw / 2, t.y - 66, tw, 20);
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(t.x - tw / 2, t.y - 66, tw, 20);
+      ctx.fillStyle = '#a7f3d0';
+      ctx.fillText(t.name, t.x, t.y - 55);
+      ctx.restore();
+    }
+  }
+
   private renderPlayer(ctx: CanvasRenderingContext2D) {
     const p = this.player;
     ctx.save();
@@ -2354,6 +2454,41 @@ export class GameEngine {
 
     // Damage flash (white silhouette)
     const isFlashing = e.hitFlashTimer > 0;
+
+    // Adaptive-quality fast path: for regular (non-boss) enemies on struggling
+    // devices, skip the detailed multi-path sprites and shadowBlur (the
+    // single most expensive 2D operation) and draw a cheap billboard.
+    if (this.pool.lowQuality && !e.isBoss) {
+      // Ground shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.beginPath();
+      ctx.ellipse(0, e.radius * 0.9, e.radius * 0.8, e.radius * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      const r = e.radius;
+      const bob = Math.sin(e.animTimer) * 2;
+      ctx.fillStyle = isFlashing ? '#ffffff' : e.color;
+      ctx.beginPath();
+      ctx.ellipse(0, bob, r * 0.75, r * 0.9, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (!isFlashing) {
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(r * 0.1, bob - r * 0.35, 2.5, 2.5);
+        ctx.fillRect(-r * 0.35, bob - r * 0.35, 2.5, 2.5);
+      }
+
+      if (e.hp < e.maxHp) {
+        const barW = Math.max(24, r * 1.6);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(-barW / 2, bob - r * 1.3 - 8, barW, 4);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-barW / 2, bob - r * 1.3 - 8, barW * Math.max(0, e.hp / e.maxHp), 4);
+      }
+
+      ctx.restore();
+      return;
+    }
 
     // Ground Shadow
     ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';

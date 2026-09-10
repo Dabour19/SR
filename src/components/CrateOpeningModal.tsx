@@ -41,14 +41,14 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
       return;
     }
     setReward(res.reward);
-    // Rebuild strip so the landing slot shows the ACTUAL reward emoji
-    setStrip(
-      buildStrip(
-        res.reward.kind === 'character'
-          ? res.reward.emoji
+    // Rebuild strip so the landing slot shows the ACTUAL reward icon
+    setStrip(buildStrip(
+      res.reward.kind === 'character'
+        ? res.reward.emoji
+        : res.reward.rarity === 'legendary' || res.reward.rarity === 'epic'
+          ? '💎'
           : '🪙'
-      )
-    );
+    ));
 
     // Fast ticking sound that decelerates with the reel
     let played = 0;
@@ -106,8 +106,29 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
 
   const rar = reward ? RARITY_CONFIG[reward.rarity] : null;
 
+  /* The icon of the actually-obtained reward: characters show their emoji;
+     coin prizes show a gem for high rarities, a coin otherwise. */
+  const rewardIcon = reward
+    ? reward.kind === 'character'
+      ? reward.emoji
+      : reward.rarity === 'legendary' || reward.rarity === 'epic'
+        ? '💎'
+        : '🪙'
+    : '🪙';
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-md p-4"
+      style={{ animation: phase === 'landed' ? 'screen-shake 0.5s ease-out' : undefined }}
+    >
+      {/* White flash the instant the reel lands */}
+      {phase !== 'spin' && (
+        <div
+          className="absolute inset-0 bg-white pointer-events-none"
+          style={{ animation: 'land-flash 0.55s ease-out forwards' }}
+        />
+      )}
+
       {/* Glow behind reel / reward */}
       <div
         className="absolute w-96 h-96 rounded-full blur-3xl pointer-events-none transition-opacity duration-700"
@@ -119,7 +140,7 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
       />
 
       {/* Rising sparkles during spin & reveal */}
-      {Array.from({ length: 14 }).map((_, i) => (
+      {Array.from({ length: 22 }).map((_, i) => (
         <div
           key={i}
           className="absolute pointer-events-none text-lg select-none"
@@ -199,13 +220,31 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
             )}
 
             <div
-              className="mx-auto w-64 rounded-3xl border-2 p-6 bg-[#1e293b]/95 backdrop-blur"
+              className="relative mx-auto w-64 rounded-3xl border-2 p-6 bg-[#1e293b]/95 backdrop-blur"
               style={{
                 borderColor: rar.color,
                 boxShadow: `0 0 45px ${rar.glow}`,
                 animation: 'reward-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
               }}
             >
+              {/* Pulsing rarity halo behind the item */}
+              <div
+                className="absolute inset-0 rounded-3xl border-2 pointer-events-none"
+                style={{ borderColor: rar.color, animation: 'halo-pulse 1.4s ease-out infinite' }}
+              />
+              {/* Confetti burst on reveal */}
+              {phase === 'reveal' &&
+                Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="absolute top-0 w-1.5 h-3 rounded-sm pointer-events-none"
+                    style={{
+                      left: `${8 + i * 7.5}%`,
+                      background: i % 3 === 0 ? rar.color : i % 3 === 1 ? '#fbbf24' : '#22d3ee',
+                      animation: `confetti-fall ${1.2 + (i % 4) * 0.35}s ease-in ${i * 0.08}s infinite`,
+                    }}
+                  />
+                ))}
               <div
                 className="text-[10px] font-black px-2 py-1 rounded-full inline-block mb-3"
                 style={{ color: rar.color, background: rar.bg, border: `1px solid ${rar.color}66` }}
@@ -215,11 +254,11 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
               <div
                 className="text-7xl mb-3"
                 style={{
-                  animation: phase === 'reveal' ? 'glow-burst 1.2s ease-in-out infinite' : undefined,
+                  animation: phase === 'reveal' ? 'item-float 1.8s ease-in-out infinite, glow-burst 1.2s ease-in-out infinite' : undefined,
                   filter: `drop-shadow(0 0 18px ${rar.color})`,
                 }}
               >
-                {reward.kind === 'character' ? reward.emoji : '🪙'}
+                {rewardIcon}
               </div>
               {reward.kind === 'character' ? (
                 <>
@@ -238,7 +277,9 @@ export function CrateOpeningModal({ crateId, onClose }: CrateOpeningModalProps) 
                     <Coins className="w-5 h-5" />
                     +{reward.amount.toLocaleString()}
                   </div>
-                  <div className="text-xs text-slate-400 mt-1">مكافأة عملات</div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    {rewardIcon === '💎' ? 'جوهرة نادرة + مكافأة عملات!' : 'مكافأة عملات'}
+                  </div>
                 </>
               )}
             </div>

@@ -21,6 +21,8 @@ import { AuthModal } from './components/AuthModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { playerAuthService } from './services/playerAuthService';
 import { lobbyService } from './services/lobbyService';
+import { runPresence } from './services/runPresence';
+import { friendsService } from './services/friendsService';
 import { Lobby } from './components/Lobby';
 import { VirtualJoystick } from './components/VirtualJoystick';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -100,6 +102,7 @@ export default function App() {
 
   // Game Over Callback
   const handleGameOver = useCallback((stats: GameRunStats) => {
+    runPresence.leave(); // co-op run ended for me
     setGameOverStats(stats);
     // Reward coins for the run (time + kills + level, victory bonus)
     const raw = Math.floor(
@@ -155,6 +158,7 @@ export default function App() {
 
   // Exit lobby back to main menu (زر الرجوع)
   const handleExitToMenu = () => {
+    runPresence.leave();
     soundEngine.setMuted(true);
     engineRef.current?.stopRun();
     setInGame(false);
@@ -169,6 +173,7 @@ export default function App() {
    * kills / level-ups keep happening in the background after leaving.
    */
   const handleQuitToHub = () => {
+    runPresence.leave();
     if (isPaused) {
       engineRef.current?.resume(); // restore paused flag before stopping cleanly
     }
@@ -183,6 +188,11 @@ export default function App() {
   // Start game
   const handleStartGame = (difficulty?: number) => {
     soundEngine.enableAudio();
+    // Co-op: publish my position to the team's run so members see each other.
+    const team = friendsService.getTeam();
+    if (team) {
+      runPresence.start(team.code);
+    }
     if (engineRef.current) {
       // Apply lobby character + perks before starting
       engineRef.current.setLoadout(lobbyService.getRunStartStats());

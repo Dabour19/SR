@@ -43,10 +43,13 @@ function makeMember(selectedCharacter: CharacterId, isHost: boolean): TeamMember
 class FriendsService {
   private friends: FriendDoc[] = [];
   private requestsIn: FriendDoc[] = [];
+  private invites: Array<{ id: string; code: string; hostName: string; targetId: string; createdAt: number }> = [];
   private team: TeamDoc | null = null;
   private listeners = new Set<() => void>();
   private unsubFriends: (() => void) | null = null;
+  private unsubRequests: (() => void) | null = null;
   private unsubTeam: (() => void) | null = null;
+  private unsubInvites: (() => void) | null = null;
   private started: boolean = false;
   private fbReady = false;
 
@@ -82,6 +85,20 @@ class FriendsService {
   getTeam(): TeamDoc | null {
     return this.team;
   }
+  getInvites() {
+    return this.invites;
+  }
+
+  /** Remove a team invite after accepting/dismissing it. */
+  async dismissInvite(id: string): Promise<void> {
+    this.invites = this.invites.filter((i) => i.id !== id);
+    this.notify();
+    try {
+      await deleteDoc(doc(db, 'teamInvites', id));
+    } catch (e) {
+      console.warn('dismissInvite error', e);
+    }
+  }
 
   /** Begin listening (call once from Lobby). */
   async start(): Promise<void> {
@@ -102,8 +119,14 @@ class FriendsService {
           .filter((f) => f.requesterId === uid || f.targetId === uid);
         this.notify();
       });
-      this.unsubTeam = onSnapshot(q2, (snap) => {
+      this.unsubRequests = onSnapshot(q2, (snap) => {
         this.requestsIn = snap.docs.map((d) => d.data() as FriendDoc);
+        this.notify();
+      });
+      // Team invites addressed to me
+      const q3 = query(collection(db, 'teamInvites'), where('targetId', '==', uid));
+      this.unsubInvites = onSnapshot(q3, (snap) => {
+        this.invites = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
         this.notify();
       });
     } catch (e) {
@@ -114,9 +137,13 @@ class FriendsService {
 
   stop(): void {
     this.unsubFriends?.();
+    this.unsubRequests?.();
     this.unsubTeam?.();
+    this.unsubInvites?.();
     this.unsubFriends = null;
+    this.unsubRequests = null;
     this.unsubTeam = null;
+    this.unsubInvites = null;
     this.started = false;
   }
 
@@ -312,10 +339,11 @@ class FriendsService {
       if (members.length === 0) {
         await deleteDoc(doc(db, 'teams', t.code));
       } else {
-        // If host left, promote first remaining member
+        // If host left, promote first remaining member and update hostId
         const next = members[0];
+        const newHostId = members.some((m) => m.isHost) ? t.hostId : next.id;
         if (!members.some((m) => m.isHost)) next.isHost = true;
-        await setDoc(doc(db, 'teams', t.code), { members }, { merge: true });
+        await setDoc(doc(db, 'teams', t.code), { members, hostId: newHostId }, { merge: true });
       }
     } catch (e) {
       console.warn('leaveTeam error', e);
