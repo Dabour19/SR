@@ -15,6 +15,7 @@ import { AuthModal } from './components/AuthModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { lobbyService } from './services/lobbyService';
 import { runPresence } from './services/runPresence';
+import { roomSocket } from './services/roomSocket';
 import { friendsService } from './services/friendsService';
 import { Lobby } from './components/Lobby';
 import { VirtualJoystick } from './components/VirtualJoystick';
@@ -80,6 +81,11 @@ export default function App() {
   // Game Over Callback
   const handleGameOver = useCallback((stats: GameRunStats) => {
     runPresence.leave(); // co-op run ended for me
+    roomSocket.leave();   // live room socket too
+    /* Co-op: record that I finished this run so the Lobby's match-start
+       watcher can never re-launch the dungeon for me (death or victory). */
+    friendsService.markMatchLeft();
+    friendsService.markMatchEnded();
     setGameOverStats(stats);
     // Reward coins for the run (time + kills + level, victory bonus)
     const raw = Math.floor(
@@ -139,6 +145,9 @@ export default function App() {
    */
   const handleQuitToHub = () => {
     runPresence.leave();
+    roomSocket.leave();
+    /* Co-op: I left the run — block any stale auto re-launch of the dungeon. */
+    friendsService.markMatchLeft();
     if (isPaused) {
       engineRef.current?.resume(); // restore paused flag before stopping cleanly
     }
@@ -157,6 +166,12 @@ export default function App() {
     const team = friendsService.getTeam();
     if (team) {
       runPresence.start(team.code);
+      // Real-time co-op: shared boss HP + live positions over WebSocket.
+      roomSocket.setEvents({
+        onBossSync: (hp) => engineRef.current?.syncSharedBossHp(hp),
+        onBossKilled: () => engineRef.current?.killSharedBoss(),
+      });
+      roomSocket.start(team.code);
     }
     if (engineRef.current) {
       // Apply lobby character + perks before starting

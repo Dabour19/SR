@@ -49,12 +49,30 @@ service cloud.firestore {
         && p.isGuest is bool;
     }
 
+    /* ---------- Username Registry (unique names) ---------- */
+    /* doc id = lowercase username, value { uid, reservedAt }.
+       Readable by all (login by name / availability check). Reservation is
+       transactional on the client; rules enforce sane shape + ownership:
+       a name can only be taken if free, and released only by its owner. */
+    match /usernames/{nameKey} {
+      allow read: if true;
+      allow create: if signedIn()
+        && nameKey.size() >= 2 && nameKey.size() <= 30
+        && request.resource.data.uid is string
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.reservedAt is int;
+      allow update: if false; // never rename in place — delete + re-reserve
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
     /* ---------- Users ---------- */
     match /users/{userId} {
       allow read: if true;
       allow create, update: if signedIn()
         && request.auth.uid == userId
-        && plausibleProfile(request.resource.data);
+        && plausibleProfile(request.resource.data)
+        // pins are optional; if present must be short (client-side gate)
+        && (!('pin' in request.resource.data) || request.resource.data.pin == null || request.resource.data.pin is string);
       allow delete: if false;
     }
 

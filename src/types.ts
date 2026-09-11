@@ -384,6 +384,10 @@ export interface TeamDoc {
   createdAt: number;
   matchStartedAt?: number; // set by host when starting a co-op match
   matchDifficulty?: number; // shared dungeon difficulty so the whole team enters the SAME dungeon
+  /** IDs of members who left the run (died / quit / back to hub) during the match. */
+  matchLeftIds?: string[];
+  /** Set when the whole team finished the match (victory or all members dead) — blocks re-launching. */
+  matchEndedAt?: number | null;
 }
 
 export interface CharacterProgress {

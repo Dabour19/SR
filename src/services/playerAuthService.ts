@@ -13,9 +13,21 @@ import {
   logoutFirebase,
   savePlayerToFirestore,
   loadPlayerFromFirestore,
+  loadPlayerByUsername,
+  reserveUsername,
+  releaseUsername,
+  isUsernameAvailable,
+  normalizeUsername,
   fetchGlobalLeaderboard,
 } from './firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import {
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInAnonymously,
+  signOut,
+  updateProfile as updateFbProfile,
+} from 'firebase/auth';
 import { connectivityService } from './connectivityService';
 
 const STORAGE_ACCOUNTS_KEY = 'survivor_rogue_accounts_v2';
@@ -205,6 +217,9 @@ class PlayerAuthService {
   private currentUser: PlayerAccount | null = null;
   private leaderboard: LeaderboardRecord[] = [];
   private listeners: Set<(user: PlayerAccount) => void> = new Set();
+  /** True right after Google sign-in when the player still has to choose a
+   *  unique username before their cloud progress is registered. */
+  public pendingNameClaim: boolean = false;
 
   constructor() {
     this.loadState();
@@ -235,73 +250,53 @@ class PlayerAuthService {
   private initFirebaseAuthListener() {
     try {
       onAuthStateChanged(auth, async (fbUser) => {
-        if (fbUser) {
-          // If already set as current user with same id, no need to overwrite
-          if (this.currentUser && this.currentUser.id === fbUser.uid) {
-            return;
-          }
-
-          // Check if profile exists in Firestore
-          const remoteAccount = await loadPlayerFromFirestore(fbUser.uid);
-          if (remoteAccount) {
-            this.accounts.set(remoteAccount.id, remoteAccount);
-            this.currentUser = remoteAccount;
-          } else {
-            // Check local accounts
-            const existingLocal = this.accounts.get(fbUser.uid);
-            if (existingLocal) {
-              existingLocal.email = fbUser.email || existingLocal.email;
-              existingLocal.photoURL = fbUser.photoURL || existingLocal.photoURL;
-              existingLocal.authProvider = 'google';
-              existingLocal.isGuest = false;
-              this.currentUser = existingLocal;
-            } else {
-              // Create new Google Player Account
-              const newGoogleAcc: PlayerAccount = {
-                id: fbUser.uid,
-                username: fbUser.displayName || fbUser.email?.split('@')[0] || 'بطل الصمود',
-                email: fbUser.email || undefined,
-                photoURL: fbUser.photoURL || undefined,
-                authProvider: 'google',
-                avatar: 'blade',
-                title: 'مقاتل مبتدئ',
-                tier: 'bronze',
-                rankScore: 0,
-                isGuest: false,
-                stats: {
-                  bestSurvivalTime: 0,
-                  bestKills: 0,
-                  highestLevel: 1,
-                  totalDamage: 0,
-                  totalRuns: 0,
-                  totalKills: 0,
-                  victories: 0,
-                  lastPlayed: Date.now(),
-                },
-                history: [],
-              };
-
-              // Migrate current guest progress if any
-              if (this.currentUser && this.currentUser.isGuest) {
-                newGoogleAcc.stats = { ...this.currentUser.stats, lastPlayed: Date.now() };
-                newGoogleAcc.rankScore = this.currentUser.rankScore;
-                newGoogleAcc.tier = this.currentUser.tier;
-                newGoogleAcc.title = this.currentUser.title;
-                newGoogleAcc.history = [...this.currentUser.history];
-                newGoogleAcc.avatar = this.currentUser.avatar;
-              }
-
-              this.accounts.set(fbUser.uid, newGoogleAcc);
-              this.currentUser = newGoogleAcc;
-              savePlayerToFirestore(newGoogleAcc);
-            }
-          }
-
-          this.saveAccounts();
-          this.saveCurrentUser();
-          this.syncCurrentToLeaderboard();
-          this.notifyListeners();
+        // IMPORTANT: ignore anonymous sessions — they are only used for
+        // friends/teams/presence writes and must never replace the player's
+        // local/current profile (this previously "reset" the player's
+        // progress whenever an anonymous sign-in happened, e.g. on join).
+        if (!fbUser || fbUser.isAnonymous) return;
+        // If already set as current user with same id, no need to overwrite
+        if (this.currentUser && this.currentUser.id === fbUser.uid) {
+          return;
         }
+        // Restore cloud progress (if this uid already has a profile)
+        const remoteAccount = await loadPlayerFromFirestore(fbUser.uid);
+        if (remoteAccount) {
+          remoteAccount.isGuest = false;
+          this.accounts.set(remoteAccount.id, remoteAccount);
+          this.currentUser = remoteAccount;
+          this.pendingNameClaim = false;
+        } else {
+          // New Google/Firebase identity WITHOUT a reserved username yet:
+          // create a provisional profile and flag the UI to ask for a
+          // unique name before anything is saved to the cloud.
+          const acc = this.buildBaseAccount(
+            fbUser.displayName || fbUser.email?.split('@')[0] || 'بطل الصمود',
+            'blade',
+            false
+          );
+          acc.id = fbUser.uid;
+          acc.authProvider = 'google';
+          acc.email = fbUser.email || undefined;
+          acc.photoURL = fbUser.photoURL || undefined;
+          // migrate current guest progress so nothing is lost
+          if (this.currentUser && this.currentUser.isGuest) {
+            const g = this.currentUser;
+            acc.stats = { ...g.stats, lastPlayed: Date.now() };
+            acc.rankScore = g.rankScore;
+            acc.tier = g.tier;
+            acc.title = g.title;
+            acc.history = [...g.history];
+            acc.avatar = g.avatar;
+          }
+          this.accounts.set(acc.id, acc);
+          this.currentUser = acc;
+          this.pendingNameClaim = true;
+        }
+        this.saveAccounts();
+        this.saveCurrentUser();
+        this.syncCurrentToLeaderboard();
+        this.notifyListeners();
       });
     } catch (e) {
       console.warn('Firebase Auth listener init warning:', e);
@@ -401,11 +396,11 @@ class PlayerAuthService {
     return this.currentUser;
   }
 
-  public register(
+  public async register(
     username: string,
     pin: string,
     avatar: PlayerAvatar = 'blade'
-  ): { success: boolean; error?: string; account?: PlayerAccount } {
+  ): Promise<{ success: boolean; error?: string; account?: PlayerAccount }> {
     const trimmed = username.trim();
     if (!trimmed || trimmed.length < 2) {
       return { success: false, error: 'يجب أن يتكون اسم البطل من حرفين على الأقل' };
@@ -413,24 +408,111 @@ class PlayerAuthService {
     if (trimmed.length > 20) {
       return { success: false, error: 'اسم البطل طويل جداً (الحد الأقصى 20 حرفاً)' };
     }
+    if (trimmed.includes('@')) {
+      return { success: false, error: 'اسم البطل لا يمكن أن يحتوي على @' };
+    }
 
-    // Check unique username
-    for (const acc of this.accounts.values()) {
-      if (!acc.isGuest && acc.username.toLowerCase() === trimmed.toLowerCase()) {
-        return { success: false, error: 'اسم البطل هذا مسجل مسبقاً، الرجاء اختيار اسم آخر أو تسجيل الدخول' };
+    const base = this.buildBaseAccount(trimmed, avatar, false);
+    const guest = this.currentUser;
+    const migrate = () => {
+      if (guest && guest.isGuest) {
+        base.stats = { ...guest.stats, lastPlayed: Date.now() };
+        base.rankScore = guest.rankScore;
+        base.tier = guest.tier;
+        base.title = guest.title;
+        base.history = [...guest.history];
+      }
+    };
+
+    let fbUid: string | null = null;
+    if (!connectivityService.isOffline()) {
+      // 0) Check availability FIRST (before creating any Firebase account) so a
+      //    taken name never leaves the user signed into a throwaway account.
+      const precheck = await isUsernameAvailable(trimmed);
+      if (precheck === false) {
+        return { success: false, error: 'اسم البطل هذا محجوز للاعب آخر، الرجاء اختيار اسم مميز' };
+      }
+      // 1) Try a REAL Firebase account (email/password with a synthetic email
+      //    derived from the unique name + the PIN as password) so progress can
+      //    be restored on ANY device by logging in with the same name/PIN.
+      if (pin && pin.trim().length >= 4) {
+        try {
+          const synthetic = `${normalizeUsername(trimmed).replace(/[^a-z0-9]/g, '') || 'hero'}${Date.now().toString(36)}@players.srgame`;
+          const cred = await createUserWithEmailAndPassword(auth, synthetic, pin.trim());
+          fbUid = cred.user.uid;
+        } catch (e: any) {
+          if (e?.code === 'auth/email-already-in-use') {
+            return { success: false, error: 'هذا الاسم محجوز، الرجاء اختيار اسم آخر' };
+          }
+          if (e?.code !== 'auth/operation-not-allowed' && e?.code !== 'auth/admin-restricted-operation') {
+            console.warn('email/pass register failed, falling back to anonymous:', e?.code);
+          }
+        }
+      }
+      // 2) Fallback: anonymous Firebase session (still enables cloud profile
+      //    + friends/teams). Progress restore across devices then requires
+      //    the name to be claimed in the registry.
+      if (!fbUid) {
+        try {
+          if (!auth.currentUser || auth.currentUser.isAnonymous) {
+            const res = await signInAnonymously(auth);
+            fbUid = res.user.uid;
+          } else {
+            fbUid = auth.currentUser.uid;
+          }
+        } catch (e) {
+          console.warn('anonymous sign-in failed during register', e);
+        }
       }
     }
 
-    const id = 'user_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
-    const newAcc: PlayerAccount = {
-      id,
-      username: trimmed,
-      pin: pin ? pin.trim() : undefined,
+    // 3) Reserve the UNIQUE username in the cloud registry (atomic).
+    if (fbUid) {
+      migrate();
+      const resv = await reserveUsername(trimmed, fbUid);
+      if (!resv.success) {
+        // Name already taken by another uid → block registration entirely and
+        // sign out of the throwaway session so the next attempt gets a fresh
+        // anonymous uid (otherwise the next name is bound to this lost uid).
+        if (/محجوز/.test((resv as any).error || '')) {
+          try {
+            await signOut(auth);
+            await signInAnonymously(auth);
+          } catch {
+            /* best-effort reset */
+          }
+          return { success: false, error: (resv as any).error };
+        }
+        // offline-ish failure: keep going locally, retry later on save
+      }
+      base.id = fbUid;
+    }
+
+    migrate();
+    if (!fbUid) {
+      base.id = 'user_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    }
+    this.accounts.set(base.id, base);
+    this.currentUser = base;
+    this.saveAccounts();
+    this.saveCurrentUser();
+    this.syncCurrentToLeaderboard();
+    if (fbUid) savePlayerToFirestore(base);
+
+    return { success: true, account: base };
+  }
+
+  /** A fresh account template (id filled by the caller). */
+  private buildBaseAccount(username: string, avatar: PlayerAvatar, isGuest: boolean): PlayerAccount {
+    return {
+      id: '',
+      username,
       avatar,
+      authProvider: isGuest ? 'guest' : 'custom',
       title: 'مقاتل مبتدئ',
       tier: 'bronze',
       rankScore: 0,
-      isGuest: false,
+      isGuest,
       stats: {
         bestSurvivalTime: 0,
         bestKills: 0,
@@ -443,46 +525,55 @@ class PlayerAuthService {
       },
       history: [],
     };
-
-    // If current was a guest with stats, migrate their stats to new account!
-    if (this.currentUser && this.currentUser.isGuest) {
-      newAcc.stats = { ...this.currentUser.stats, lastPlayed: Date.now() };
-      newAcc.rankScore = this.currentUser.rankScore;
-      newAcc.tier = this.currentUser.tier;
-      newAcc.title = this.currentUser.title;
-      newAcc.history = [...this.currentUser.history];
-    }
-
-    this.accounts.set(id, newAcc);
-    this.currentUser = newAcc;
-    this.saveAccounts();
-    this.saveCurrentUser();
-    this.syncCurrentToLeaderboard();
-
-    return { success: true, account: newAcc };
   }
 
-  public login(username: string, pin?: string): { success: boolean; error?: string; account?: PlayerAccount } {
-    const trimmed = username.trim().toLowerCase();
-    let found: PlayerAccount | null = null;
+  public async login(username: string, pin?: string): Promise<{ success: boolean; error?: string; account?: PlayerAccount }> {
+    const trimmed = username.trim();
+    if (!trimmed) return { success: false, error: 'أدخل اسم البطل' };
 
+    // 1) Cross-device cloud restore: look the name up in the username registry
+    //    and load the FULL cloud profile (stats, history, rank, tier).
+    if (!connectivityService.isOffline()) {
+      const cloud = await loadPlayerByUsername(trimmed);
+      if (cloud) {
+        // PIN gate (client-side): if the profile has a pin it must match.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        const storedPin = (cloud as any).pin as string | undefined;
+        if (storedPin && pin && storedPin !== pin.trim()) {
+          return { success: false, error: 'الرمز السري (PIN) غير صحيح لهذا البطل' };
+        }
+        if (storedPin && !pin) {
+          return { success: false, error: 'هذا البطل محمي برمز سري — أدخل الـ PIN' };
+        }
+        cloud.isGuest = false;
+        this.accounts.set(cloud.id, cloud);
+        this.currentUser = cloud;
+        this.saveAccounts();
+        this.saveCurrentUser();
+        this.syncCurrentToLeaderboard();
+        this.notifyListeners();
+        return { success: true, account: cloud };
+      }
+    }
+
+    // 2) Local fallback (offline / legacy local accounts)
+    const lower = trimmed.toLowerCase();
+    let found: PlayerAccount | null = null;
     for (const acc of this.accounts.values()) {
-      if (acc.username.toLowerCase() === trimmed) {
+      if (acc.username.toLowerCase() === lower) {
         found = acc;
         break;
       }
     }
-
     if (!found) {
-      return { success: false, error: 'لم يتم العثور على بطل بهذا الاسم. هل تريد إنشاء حساب جديد؟' };
+      return { success: false, error: 'لم يتم العثور على بطل بهذا الاسم في السحابة أو محلياً. هل تريد إنشاء حساب جديد؟' };
     }
-
     if (found.pin && pin && found.pin !== pin.trim()) {
       return { success: false, error: 'الرمز السري (PIN) غير صحيح لهذا البطل' };
     }
-
     this.currentUser = found;
     this.saveCurrentUser();
+    this.notifyListeners();
     return { success: true, account: found };
   }
 
@@ -522,6 +613,7 @@ class PlayerAuthService {
     error?: string;
     errorCode?: string;
     account?: PlayerAccount;
+    needsUsername?: boolean;
   }> {
     try {
       const res = await firebaseLoginWithGoogle();
@@ -535,27 +627,12 @@ class PlayerAuthService {
 
       const fbUser = res.user;
 
-      // Check remote Firestore first
+      // Check remote Firestore profile by uid (full cloud progress)
       let account = await loadPlayerFromFirestore(fbUser.uid);
 
-      if (account) {
-        // Existing remote profile found
-        if (fbUser.displayName && !account.username) {
-          account.username = fbUser.displayName;
-        }
-        account.email = fbUser.email || account.email;
-        account.photoURL = fbUser.photoURL || account.photoURL;
-        account.authProvider = 'google';
-        account.isGuest = false;
-      } else if (this.accounts.has(fbUser.uid)) {
-        // Existing local profile found
-        account = this.accounts.get(fbUser.uid)!;
-        account.email = fbUser.email || account.email;
-        account.photoURL = fbUser.photoURL || account.photoURL;
-        account.authProvider = 'google';
-        account.isGuest = false;
-      } else {
-        // Create new Google Player Account
+      // A Google user whose uid has NO reserved username is treated as a NEW
+      // player: they MUST choose a unique username before progress is saved.
+      if (!account) {
         account = {
           id: fbUser.uid,
           username: fbUser.displayName || fbUser.email?.split('@')[0] || 'بطل الصمود',
@@ -589,8 +666,26 @@ class PlayerAuthService {
           account.history = [...this.currentUser.history];
           account.avatar = this.currentUser.avatar;
         }
+
+        this.accounts.set(account.id, account);
+        this.currentUser = account;
+        this.saveAccounts();
+        this.saveCurrentUser();
+        this.notifyListeners();
+        // Flag: profile not registered yet — the UI must ask for a UNIQUE name.
+        this.pendingNameClaim = true;
+        return { success: true, account, needsUsername: true };
       }
 
+      // Existing cloud profile — restore full progress.
+      if (fbUser.displayName && !account.username) {
+        account.username = fbUser.displayName;
+      }
+      account.email = fbUser.email || account.email;
+      account.photoURL = fbUser.photoURL || account.photoURL;
+      account.authProvider = 'google';
+      account.isGuest = false;
+      this.pendingNameClaim = false;
       this.accounts.set(account.id, account);
       this.currentUser = account;
       this.saveAccounts();
@@ -608,6 +703,34 @@ class PlayerAuthService {
         errorCode: err?.code,
       };
     }
+  }
+
+  /** Google / any Firebase sign-in: reserve a UNIQUE username and register the
+   *  cloud profile so progress becomes restorable on any device. */
+  public async claimUsername(name: string): Promise<{ success: boolean; error?: string; account?: PlayerAccount }> {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length < 2 || trimmed.length > 20) {
+      return { success: false, error: 'يجب أن يتكون الاسم من 2 إلى 20 حرفاً' };
+    }
+    const fbUser = auth.currentUser;
+    if (!fbUser) return { success: false, error: 'انتهت جلسة تسجيل الدخول، أعد المحاولة' };
+    const resv = await reserveUsername(trimmed, fbUser.uid);
+    if (!resv.success) return { success: false, error: (resv as any).error };
+
+    const acc = this.currentUser!;
+    const old = acc.username;
+    acc.username = trimmed;
+    acc.isGuest = false;
+    this.accounts.set(acc.id, acc);
+    this.currentUser = acc;
+    this.saveAccounts();
+    this.saveCurrentUser();
+    this.pendingNameClaim = false;
+    if (old && old !== trimmed) releaseUsername(old, fbUser.uid);
+    await savePlayerToFirestore(acc);
+    this.syncCurrentToLeaderboard();
+    this.notifyListeners();
+    return { success: true, account: acc };
   }
 
   public updateProfile(updates: { username?: string; avatar?: PlayerAvatar; pin?: string }): boolean {

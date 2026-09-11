@@ -19,6 +19,19 @@ import { ObjectPoolSystem } from './objectPool';
 import { getCurrentWave } from './waves';
 import { drawHeroSprite } from './characterSprite';
 import { runPresence } from '../services/runPresence';
+import { roomSocket } from '../services/roomSocket';
+
+/**
+ * Co-op presence facade: prefer the live WebSocket room (fast, shared boss &
+ * kills) when connected, otherwise fall back to the slow Firestore presence.
+ */
+const presence = {
+  getOthers: () => (roomSocket.isConnected() ? roomSocket.getOthers() : runPresence.getOthers()),
+  update(x: number, y: number, hp: number, maxHp: number) {
+    if (roomSocket.isConnected()) roomSocket.update(x, y, hp, maxHp);
+    else runPresence.update(x, y);
+  },
+};
 
 
 export interface GameEngineCallbacks {
@@ -54,6 +67,7 @@ export class GameEngine {
   private dpr: number = 1;
   private floorPattern: CanvasPattern | null = null;
   private avgFrameDt: number = 1 / 60; // EMA of frame time for adaptive quality
+  private enemyQualityLoad: number = 0; // active enemies last frame (quality heuristic)
   private statsSendTimer: number = 0;  // throttle React HUD updates
 
   // Spatial hash grid for enemy collision queries (rebuilt each frame)
@@ -495,9 +509,25 @@ export class GameEngine {
 
       // Adaptive quality: track an EMA of real frame time. If we cannot hold
       // ~40fps for a sustained period, drop cosmetic effects automatically.
+      // The enemy "circle" fallback depends on BOTH the frame time AND the
+      // number of active enemies: with only a handful of enemies visible, even
+      // a slower device can render full sprites — previously a transient dip
+      // (or a burst of spawns) flipped every enemy to a plain billboard circle
+      // and it stayed that way. Now the switch is proportional and recovers
+      // as soon as the load drops.
       if (rawDt > 0 && rawDt < 1) {
         this.avgFrameDt = this.avgFrameDt * 0.95 + rawDt * 0.05;
-        this.pool.lowQuality = this.avgFrameDt > 1 / 40;
+        let activeCount = 0;
+        const enemies = this.pool.enemies;
+        for (let i = 0; i < enemies.length; i++) {
+          if (enemies[i].active) activeCount++;
+        }
+        // Threshold scales with enemy count: at ≤15 enemies we always render
+        // full sprites; above that, the fps bar rises so the cheap rendering
+        // path only engages when there are really many enemies on screen.
+        const threshold = (1 / 40) * (1 + Math.min(1, Math.max(0, (activeCount - 15) / 165)));
+        this.enemyQualityLoad = activeCount;
+        this.pool.lowQuality = activeCount > 15 && this.avgFrameDt > threshold;
       }
 
       if (this.isRunning && !this.isPaused) {
@@ -524,11 +554,12 @@ export class GameEngine {
   private update(dt: number) {
     this.timeSurvived += dt;
 
-    // Co-op presence: publish my position ~2x/second so teammates see me.
+    // Co-op presence: publish my position ~2x/second (Firestore fallback) or
+    // ~20Hz live over WebSocket when the real-time room is connected.
     this.presenceTimer -= dt;
     if (this.presenceTimer <= 0) {
-      this.presenceTimer = 0.5;
-      runPresence.update(this.player.x, this.player.y);
+      this.presenceTimer = roomSocket.isConnected() ? 0.05 : 0.5;
+      presence.update(this.player.x, this.player.y, this.stats.hp, this.stats.maxHp);
     }
 
     // HP regeneration
@@ -1252,6 +1283,27 @@ export class GameEngine {
     }
   }
 
+  /** Shared boss HP from the co-op server — the server is AUTHORITATIVE.
+   *  Spawn HP is sent BASE (no local multiplier) so all clients register the
+   *  same boss; here we only clamp down to the server value (lag-safe). */
+  public syncSharedBossHp(hp: number | null) {
+    if (hp === null || !this.activeBoss) return;
+    if (hp <= 0) {
+      this.killSharedBoss();
+      return;
+    }
+    if (hp < this.activeBoss.hp) this.activeBoss.hp = hp;
+  }
+
+  /** The shared boss died on the server — clean up my local copy. */
+  public killSharedBoss() {
+    const boss = this.activeBoss;
+    if (!boss) return;
+    boss.hp = 0;
+    this.activeBoss = null;
+    boss.active = false;
+  }
+
   private spawnBoss(bossDef: NonNullable<ReturnType<typeof getCurrentWave>['bossEvent']>) {
     soundEngine.playEnemyDeath(true);
     this.addScreenShake(12);
@@ -1281,6 +1333,10 @@ export class GameEngine {
       boss.attackTimer = 2.0;
       boss.bossPhase = 1;
       this.activeBoss = boss;
+      // Real co-op: register the SHARED boss so every member drains ONE HP bar.
+      // IMPORTANT: report the BASE HP (no local difficulty multiplier) so every
+      // client registers the exact same boss; the difficulty hpMul stays local.
+      roomSocket.sendBossSpawn(bossDef.hp);
     }
   }
 
@@ -1598,6 +1654,23 @@ export class GameEngine {
   }
 
   public damageEnemy(enemy: EnemyEntity, damage: number, isCrit: boolean) {
+    // SHARED BOSS (real co-op): the server holds the authoritative boss HP.
+    // My local hit is visual only; the server broadcasts the synced HP back.
+    if (enemy.isBoss && roomSocket.isConnected()) {
+      const playerMul = Math.max(0.5, 1 - (this.dungeonDifficulty - 1) * 0.04);
+      const finalDamage = damage * 0.85 * playerMul;
+      enemy.hp -= finalDamage;
+      enemy.hitFlashTimer = 0.12;
+      this.totalDamageDealt += finalDamage;
+      this.pool.spawnDamageNumber(enemy.x, enemy.y, finalDamage, isCrit);
+      if (enemy.hp <= 0) {
+        this.killEnemy(enemy);
+      } else {
+        roomSocket.sendBossDamage(finalDamage);
+      }
+      return;
+    }
+
     // Bosses are armored: they take 15% less damage from every source,
     // making burst builds less trivially effective against them.
     const playerMul = Math.max(0.5, 1 - (this.dungeonDifficulty - 1) * 0.04);
@@ -1623,8 +1696,12 @@ export class GameEngine {
       if (this.activeBoss === enemy) {
         this.activeBoss = null;
       }
+      // Real co-op: everyone sees the shared boss die.
+      roomSocket.sendBossDamage(1e9);
     } else {
       this.pool.spawnParticles(enemy.x, enemy.y, enemy.color, 6, 75);
+      // Real co-op: shared team kill counter.
+      roomSocket.sendKill();
     }
 
     // Drop XP Gem
@@ -2193,7 +2270,7 @@ export class GameEngine {
   /** Co-op: draw team members synced via runPresence inside the dungeon. */
   private renderTeammates(ctx: CanvasRenderingContext2D) {
     const now = performance.now();
-    for (const t of runPresence.getOthers()) {
+    for (const t of presence.getOthers()) {
       // skip stale or off-screen teammates
       if (now - t.updatedAt > 12000) continue;
       if (!this.isOnScreen(t.x, t.y, 80)) continue;

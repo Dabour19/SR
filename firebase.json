@@ -1,6 +1,7 @@
 {
   "firestore": {
     "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
     "database": "ai-studio-survivorrogue2da-b4ed2798-e934-4db8-8ee1-d3d41c356e6e"
   },
   "hosting": {

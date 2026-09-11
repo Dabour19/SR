@@ -16,7 +16,6 @@ import {
   runTransaction,
   arrayUnion,
 } from 'firebase/firestore';
-import { connectivityService } from './connectivityService';
 import { auth, db, loginAnonymously } from './firebase';
 import { connectivityService } from './connectivityService';
 import type { FriendDoc, TeamDoc, TeamMember, CharacterId, PlayerAvatar } from '../types';
@@ -25,13 +24,15 @@ import { playerAuthService } from './playerAuthService';
 const MAX_TEAM_MEMBERS = 4;
 
 function meId(): string {
-  return playerAuthService.getCurrentUser().id;
+  // Prefer the REAL Firebase uid (required for auth rules + cross-device
+  // identity); fall back to the local profile id when signed out/offline.
+  return auth.currentUser?.uid || playerAuthService.getCurrentUser().id;
 }
 
 function makeMember(selectedCharacter: CharacterId, isHost: boolean): TeamMember {
   const user = playerAuthService.getCurrentUser();
   return {
-    id: user.id,
+    id: meId(),
     name: user.username,
     avatar: (user.avatar || 'blade') as PlayerAvatar,
     isHost,
@@ -55,18 +56,33 @@ class FriendsService {
   private started: boolean = false;
   private fbReady = false;
 
-  /** Ensure the player has a firebase session (anonymous is enough to write docs). */
-  private async ensureAuth(): Promise<boolean> {
-    if (this.fbReady) return true;
+  /** Ensure the player has a firebase session (anonymous is enough to write docs).
+   *  Returns 'ok' on success (truthy), or an Arabic error message describing the real
+   *  reason the cloud session could not be established. Callers check `if (!ok)`. */
+  private async ensureAuth(): Promise<string> {
+    if (this.fbReady) return 'ok';
+    if (connectivityService.isOffline()) return 'لا يوجد اتصال بالإنترنت';
     try {
       if (!auth.currentUser) {
-        const res = await loginAnonymously();
-        if (!res.success) return false;
+        const res = await Promise.race([
+          loginAnonymously(),
+          new Promise<{ success: false; error?: string }>((resolve) =>
+            setTimeout(() => resolve({ success: false, error: 'انتهت مهلة الاتصال بالخادم' }), 15000)
+          ),
+        ]);
+        if (!res.success) {
+          console.warn('ensureAuth: anonymous sign-in failed:', res.error);
+          const raw = String(res.error || '');
+          if (/network|timeout|fetch/i.test(raw)) return 'تعذر الاتصال بالخادم، تحقق من الإنترنت وحاول مجددًا';
+          if (/operation-not-allowed|unauthorized/i.test(raw)) return 'تسجيل الدخول المجهول غير مُفعّل في إعدادات Firebase';
+          return res.error || 'تعذر الاتصال بالخادم';
+        }
       }
       this.fbReady = true;
-      return true;
-    } catch {
-      return false;
+      return 'ok';
+    } catch (e: any) {
+      console.warn('ensureAuth error', e);
+      return e?.message || 'تعذر الاتصال بالخادم';
     }
   }
 
@@ -115,6 +131,9 @@ class FriendsService {
     const ok = await this.ensureAuth();
     if (!ok) return;
     this.started = true;
+    // ok is truthy ('ok') — the guard below previously failed because ensureAuth
+    // returned null on success, which is why team creation always reported
+    // "تعذر الاتصال بالخادم".
 
     const uid = meId();
 
@@ -174,7 +193,7 @@ class FriendsService {
 
   async sendFriendRequest(target: { id: string; username: string; avatar: PlayerAvatar }): Promise<{ success: boolean; error?: string }> {
     const ok = await this.ensureAuth();
-    if (!ok) return { success: false, error: 'تعذر الاتصال بالخادم' };
+    if (!ok) return { success: false, error: ok };
     const me = playerAuthService.getCurrentUser();
     if (target.id === me.id) return { success: false, error: 'لا يمكنك إضافة نفسك' };
     if (this.friends.some((f) => f.requesterId === target.id || f.targetId === target.id)) {
@@ -229,8 +248,9 @@ class FriendsService {
   }
 
   async createTeam(selectedCharacter: CharacterId): Promise<{ success: boolean; code?: string; error?: string }> {
+    if (connectivityService.isOffline()) return { success: false, error: 'إنشاء الفريق يتطلب اتصالاً بالإنترنت' };
     const ok = await this.ensureAuth();
-    if (!ok) return { success: false, error: 'تعذر الاتصال بالخادم' };
+    if (!ok) return { success: false, error: ok };
     const code = FriendsService.genCode();
     const team: TeamDoc = {
       code,
@@ -239,10 +259,18 @@ class FriendsService {
       createdAt: Date.now(),
     };
     try {
-      await setDoc(doc(db, 'teams', code), team);
-      this.listenTeam(code);
-      this.notify();
-      return { success: true, code };
+      // Retry with a new code if we hit an improbable collision with an
+      // existing team — never overwrite someone else's team doc.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const useCode = attempt === 0 ? code : FriendsService.genCode();
+        const existing = await getDoc(doc(db, 'teams', useCode));
+        if (existing.exists()) continue;
+        await setDoc(doc(db, 'teams', useCode), { ...team, code: useCode });
+        this.listenTeam(useCode);
+        this.notify();
+        return { success: true, code: useCode };
+      }
+      return { success: false, error: 'تعذر توليد رمز فريق فريد، حاول مجددًا' };
     } catch (e: any) {
       return { success: false, error: e?.message || 'فشل إنشاء الفريق' };
     }
@@ -251,7 +279,7 @@ class FriendsService {
   async joinTeam(code: string, selectedCharacter: CharacterId): Promise<{ success: boolean; error?: string }> {
     if (connectivityService.isOffline()) return { success: false, error: 'الانضمام للفريق يتطلب اتصالاً بالإنترنت' };
     const ok = await this.ensureAuth();
-    if (!ok) return { success: false, error: 'تعذر الاتصال بالخادم' };
+    if (!ok) return { success: false, error: ok };
     const clean = code.trim().toUpperCase();
     try {
       /* Atomic join: read-modify-write inside a transaction so two players
@@ -300,8 +328,7 @@ class FriendsService {
           return;
         }
         const t = snap.data() as TeamDoc;
-        const prev = this.team?.matchStartedAt;
-        this.team = { ...t, matchStartedAt: t.matchStartedAt ?? prev };
+        this.team = t;
         this.notify();
       },
       (err) => console.warn('team snapshot error', err)
@@ -415,6 +442,11 @@ class FriendsService {
           return;
         }
         const patch: Record<string, unknown> = { members };
+        /* If I was mid-match, remember that I left so the match-start watcher
+           in the Lobby never re-launches the dungeon for me after returning. */
+        if (cur.matchStartedAt) {
+          patch.matchLeftIds = arrayUnion(meId());
+        }
         // If the host left, promote the first remaining member.
         if (cur.hostId === meId()) {
           members[0].isHost = true;
@@ -443,7 +475,36 @@ class FriendsService {
   clearMatchStart(): void {
     const t = this.team;
     if (!t) return;
-    setDoc(doc(db, 'teams', t.code), { matchStartedAt: null, matchDifficulty: null }, { merge: true }).catch(() => { });
+    setDoc(doc(db, 'teams', t.code), { matchStartedAt: null, matchDifficulty: null, matchLeftIds: null, matchEndedAt: null }, { merge: true }).catch(() => { });
+  }
+
+  /**
+   * Mark ME as having left the current co-op run (died / victory / quit).
+   * The Lobby match-start watcher uses this list so a stale matchStartedAt
+   * never re-launches the dungeon for a player who already played (and
+   * finished) the match — the old 20s window alone was not enough because
+   * matches last longer than 20s and players re-enter the lobby afterwards.
+   */
+  markMatchLeft(): void {
+    const t = this.team;
+    if (!t) return;
+    if (connectivityService.isOffline()) return;
+    setDoc(doc(db, 'teams', t.code), { matchLeftIds: arrayUnion(meId()) }, { merge: true }).catch(() => { });
+  }
+
+  /** True if I already left / finished this team's current match. */
+  haveIMatchedLeft(): boolean {
+    const t = this.team;
+    if (!t || !t.matchLeftIds) return false;
+    return t.matchLeftIds.includes(meId());
+  }
+
+  /** Mark the team's match as over so no remaining member gets re-launched. */
+  markMatchEnded(): void {
+    const t = this.team;
+    if (!t) return;
+    if (connectivityService.isOffline()) return;
+    setDoc(doc(db, 'teams', t.code), { matchEndedAt: Date.now() }, { merge: true }).catch(() => { });
   }
 }
 

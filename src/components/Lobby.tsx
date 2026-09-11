@@ -135,17 +135,26 @@ export function Lobby({ onStartGame, onOpenAuth, onOpenLeaderboard, isMuted, onT
   /* Co-op match start watcher: all members auto-launch when the host starts,
      using the host's shared dungeon difficulty so everyone enters the SAME
      dungeon (not one scaled to each member's own level).
-     The 20s recency guard prevents a stale matchStartedAt from re-launching
-     a member who opens the lobby long after a previous match started. */
+     Guards against stale launches:
+       • 20s recency window (protects late joiners opening the lobby much later)
+       • matchLeftIds — a player who already played (and died / won / quit) the
+         match is NEVER re-launched, so returning from the dungeon to the lobby
+         after game over or victory no longer throws you back into the dungeon
+         automatically. */
   useEffect(() => {
-    if (team?.matchStartedAt && Date.now() - team.matchStartedAt < 20000) {
+    if (!team?.matchStartedAt) return;
+    if (Date.now() - team.matchStartedAt >= 20000) return;
+    if (friendsService.haveIMatchedLeft()) {
+      // I already finished/left this run — just clean up the flag.
       friendsService.clearMatchStart();
-      const lvl = lobbyService.getProgress(state.selectedCharacter).level;
-      const diff = typeof team.matchDifficulty === 'number' && team.matchDifficulty > 0
-        ? team.matchDifficulty
-        : +(1 + (lvl - 1) * 0.28).toFixed(2);
-      onStartGame(diff);
+      return;
     }
+    friendsService.clearMatchStart();
+    const lvl = lobbyService.getProgress(state.selectedCharacter).level;
+    const diff = typeof team.matchDifficulty === 'number' && team.matchDifficulty > 0
+      ? team.matchDifficulty
+      : +(1 + (lvl - 1) * 0.28).toFixed(2);
+    onStartGame(diff);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [team?.matchStartedAt]);
 

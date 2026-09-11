@@ -15,15 +15,91 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   collection,
   getDocs,
   query,
+  where,
   orderBy,
   limit,
+  runTransaction,
 } from 'firebase/firestore';
 import { connectivityService } from './connectivityService';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { PlayerAccount, LeaderboardRecord } from '../types';
+
+/* ==================== USERNAME REGISTRY (unique names) ====================
+ * Collection 'usernames': doc id = lowercase name, value = { uid, reservedAt }.
+ * Reserving happens inside a Firestore transaction so two players can never
+ * claim the same name. Deleting the profile releases the name. */
+
+export type ReserveNameResult =
+  | { success: true }
+  | { success: false; error: string };
+
+export function normalizeUsername(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Reserve a unique username for the signed-in uid. Atomic via transaction. */
+export async function reserveUsername(name: string, uid: string): Promise<ReserveNameResult> {
+  const key = normalizeUsername(name);
+  if (key.length < 2 || key.length > 30) {
+    return { success: false, error: 'يجب أن يتكون الاسم من 2 إلى 30 حرفاً' };
+  }
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, 'usernames', key);
+      const snap = await tx.get(ref);
+      if (snap.exists()) {
+        const owner = snap.data()?.uid;
+        if (owner === uid) return; // already mine — keep it
+        throw new Error('NAME_TAKEN');
+      }
+      tx.set(ref, { uid, reservedAt: Date.now() });
+    });
+    return { success: true };
+  } catch (e: any) {
+    if (e?.message === 'NAME_TAKEN') {
+      return { success: false, error: 'اسم البطل هذا محجوز للاعب آخر، الرجاء اختيار اسم مميز' };
+    }
+    console.warn('reserveUsername error', e);
+    return { success: false, error: e?.code === 'permission-denied'
+      ? 'تعذر حجز الاسم (تحقق من تسجيل الدخول بالإنترنت)'
+      : 'تعذر حجز الاسم، حاول مجددًا' };
+  }
+}
+
+/** Release a name I own (e.g. renaming). Silently ignores failures. */
+export async function releaseUsername(name: string, uid: string): Promise<void> {
+  const key = normalizeUsername(name);
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, 'usernames', key);
+      const snap = await tx.get(ref);
+      if (snap.exists() && snap.data()?.uid === uid) tx.delete(ref);
+    });
+  } catch (e) {
+    console.warn('releaseUsername error', e);
+  }
+}
+
+/** Look up which uid owns a username (or null if free/not found). */
+export async function getUidForUsername(name: string): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, 'usernames', normalizeUsername(name)));
+    return snap.exists() ? (snap.data()?.uid ?? null) : null;
+  } catch (e) {
+    console.warn('getUidForUsername error', e);
+    return null;
+  }
+}
+
+/** Is this username available (not reserved by someone else)? */
+export async function isUsernameAvailable(name: string): Promise<boolean> {
+  const owner = await getUidForUsername(name);
+  return owner === null || owner === auth.currentUser?.uid;
+}
 
 // Initialize Firebase App
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -39,21 +115,29 @@ googleProvider.setCustomParameters({
 // local cache and writes are queued while offline, then synced automatically
 // once connectivity returns.
 let db: ReturnType<typeof getFirestore>;
+// NOTE: the database ID is the THIRD argument of initializeFirestore/getFirestore —
+// it is NOT a settings property. Putting it inside settings is silently ignored
+// and the SDK falls back to the (default) database.
+const customDbId =
+  firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+    ? firebaseConfig.firestoreDatabaseId
+    : undefined;
 try {
-  db = initializeFirestore(app, {
-    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-    ...(firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
-      ? { databaseId: firebaseConfig.firestoreDatabaseId }
-      : {}),
-  });
+  db = initializeFirestore(
+    app,
+    {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+      /* This project's Firestore database is an Enterprise-edition instance whose
+         gRPC channel rejects client SDK traffic with 5 NOT_FOUND, while the REST
+         (HTTP) channel works. Force the long-polling (HTTP) transport so all
+         reads/writes/listens actually reach the backend. */
+      experimentalForceLongPolling: true,
+    },
+    customDbId
+  );
 } catch {
   // Fallback (e.g. IndexedDB unavailable) — still fully functional online.
-  db = getFirestore(
-    app,
-    firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
-      ? firebaseConfig.firestoreDatabaseId
-      : undefined
-  );
+  db = getFirestore(app, customDbId);
 }
 export { db };
 
@@ -130,6 +214,12 @@ export async function logoutFirebase(): Promise<void> {
 /**
  * Save player account to Firestore
  */
+/** Load a player profile by username via the registry (cross-device login). */
+export async function loadPlayerByUsername(name: string): Promise<PlayerAccount | null> {
+  const uid = await getUidForUsername(name);
+  if (!uid) return null;
+  return loadPlayerFromFirestore(uid);
+}
 export async function savePlayerToFirestore(account: PlayerAccount): Promise<boolean> {
   if (!account || !account.id) return false;
   if (connectivityService.isOffline()) {
@@ -144,6 +234,8 @@ export async function savePlayerToFirestore(account: PlayerAccount): Promise<boo
       {
         id: account.id,
         username: account.username,
+        usernameKey: normalizeUsername(account.username),
+        pin: account.pin || null,
         email: account.email || null,
         photoURL: account.photoURL || null,
         authProvider: account.authProvider || 'custom',

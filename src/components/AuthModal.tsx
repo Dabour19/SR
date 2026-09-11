@@ -55,6 +55,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  /** Set right after a Google sign-in that has no unique username yet —
+   *  shows the mandatory claim-username step. */
+  const [needsClaim, setNeedsClaim] = useState(false);
+  const [claimName, setClaimName] = useState('');
 
   if (!isOpen) return null;
 
@@ -77,13 +82,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (res.success && res.account) {
         setCurrentUser(res.account);
         onUserChanged(res.account);
-        setSuccessMsg(
-          `أهلاً بك يا ${res.account.username}! تم تسجيل الدخول بنجاح عبر حساب Google ومزامنة إحصائياتك سحابياً.`
-        );
-        setTimeout(() => {
-          setActiveTab('profile');
-          setSuccessMsg(null);
-        }, 900);
+        if (res.needsUsername || playerAuthService.pendingNameClaim) {
+          setNeedsClaim(true);
+          setClaimName('');
+          setErrorMsg(
+            'خطوة أخيرة مطلوبة: اختر اسم بطل مميزًا (فريدًا) لحسابك لتفعيل الحفظ السحابي واسترجاع تقدمك على أي جهاز.'
+          );
+        } else {
+          setSuccessMsg(
+            `أهلاً بك يا ${res.account.username}! تم استرجاع تقدمك السحابي بالكامل.`
+          );
+          setTimeout(() => {
+            setActiveTab('profile');
+            setSuccessMsg(null);
+          }, 900);
+        }
       } else {
         setErrorMsg(res.error || 'تعذر تسجيل الدخول بحساب Google');
       }
@@ -96,65 +109,96 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleInstantHero = () => {
+  const handleClaimName = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     setErrorMsg(null);
-    const chosenName = regUsername.trim() || loginUsername.trim() || 'بطل الصمود';
-    const res = playerAuthService.register(chosenName, '', regAvatar);
-    if (res.success && res.account) {
-      setCurrentUser(res.account);
-      onUserChanged(res.account);
-      setSuccessMsg(`أهلاً بك يا ${res.account.username}! تم إنشاء ملفك بنجاح وبدء حفظ أرقامك القياسية.`);
-      setTimeout(() => {
-        setActiveTab('profile');
-        setSuccessMsg(null);
-      }, 700);
-    } else {
-      const guest = playerAuthService.loginAsGuest(regAvatar, chosenName);
-      setCurrentUser(guest);
-      onUserChanged(guest);
-      setSuccessMsg(`أهلاً بك يا ${guest.username}! تم تسجيل الدخول الفوري.`);
-      setTimeout(() => {
-        setActiveTab('profile');
-        setSuccessMsg(null);
-      }, 700);
+    setBusy(true);
+    try {
+      const res = await playerAuthService.claimUsername(claimName);
+      if (res.success && res.account) {
+        setCurrentUser(res.account);
+        onUserChanged(res.account);
+        setNeedsClaim(false);
+        setSuccessMsg(
+          `تم حجز الاسم المميز «${res.account.username}» بنجاح — تقدمك الآن محفوظ سحابياً وقابل للاسترجاع بأي جهاز!`
+        );
+        setTimeout(() => {
+          setActiveTab('profile');
+          setSuccessMsg(null);
+        }, 1600);
+      } else {
+        setErrorMsg(res.error || 'تعذر حجز الاسم');
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleInstantHero = async () => {
     setErrorMsg(null);
-    setSuccessMsg(null);
-
-    const res = playerAuthService.login(loginUsername, loginPin);
-    if (res.success && res.account) {
-      setCurrentUser(res.account);
-      onUserChanged(res.account);
-      setSuccessMsg(`مرحباً بعودتك أيها البطل ${res.account.username}!`);
-      setTimeout(() => {
-        setActiveTab('profile');
-        setSuccessMsg(null);
-      }, 700);
-    } else {
-      setErrorMsg(res.error || 'فشل تسجيل الدخول');
+    setBusy(true);
+    try {
+      const chosenName = regUsername.trim() || loginUsername.trim() || 'بطل الصمود';
+      const res = await playerAuthService.register(chosenName, '', regAvatar);
+      if (res.success && res.account) {
+        setCurrentUser(res.account);
+        onUserChanged(res.account);
+        setSuccessMsg(`أهلاً بك يا ${res.account.username}! تم إنشاء ملفك بنجاح وبدء حفظ أرقامك القياسية.`);
+        setTimeout(() => {
+          setActiveTab('profile');
+          setSuccessMsg(null);
+        }, 700);
+      } else {
+        setErrorMsg(res.error || 'تعذر إنشاء الحساب السريع');
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
+    setBusy(true);
+    try {
+      const res = await playerAuthService.login(loginUsername, loginPin);
+      if (res.success && res.account) {
+        setCurrentUser(res.account);
+        onUserChanged(res.account);
+        setSuccessMsg(`مرحباً بعودتك أيها البطل ${res.account.username}! تم استرجاع تقدمك السحابي.`);
+        setTimeout(() => {
+          setActiveTab('profile');
+          setSuccessMsg(null);
+        }, 900);
+      } else {
+        setErrorMsg(res.error || 'فشل تسجيل الدخول');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
-    const res = playerAuthService.register(regUsername, regPin, regAvatar);
-    if (res.success && res.account) {
-      setCurrentUser(res.account);
-      onUserChanged(res.account);
-      setSuccessMsg(`تم إنشاء حساب البطل بنجاح! تم ربط إحصائياتك السابقة.`);
-      setTimeout(() => {
-        setActiveTab('profile');
-        setSuccessMsg(null);
-      }, 800);
-    } else {
-      setErrorMsg(res.error || 'فشل إنشاء الحساب');
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setBusy(true);
+    try {
+      const res = await playerAuthService.register(regUsername, regPin, regAvatar);
+      if (res.success && res.account) {
+        setCurrentUser(res.account);
+        onUserChanged(res.account);
+        setSuccessMsg('تم إنشاء حساب البطل بنجاح! اسمك محجوز سحابياً وتقدمك محفوظ.');
+        setTimeout(() => {
+          setActiveTab('profile');
+          setSuccessMsg(null);
+        }, 900);
+      } else {
+        setErrorMsg(res.error || 'فشل إنشاء الحساب');
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -249,6 +293,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <span>تسجيل الدخول</span>
           </button>
         </div>
+
+        {/* MANDATORY UNIQUE-NAME CLAIM (after Google / unregistered Firebase sign-in) */}
+        {needsClaim && (
+          <form
+            onSubmit={handleClaimName}
+            className="p-4 bg-amber-950/60 border-2 border-amber-400/50 rounded-2xl mb-4 space-y-3 animate-in fade-in"
+          >
+            <div className="flex items-center gap-2 text-amber-300 font-bold text-xs">
+              <Sparkles className="w-4 h-4" />
+              <span>اختر اسم بطل مميزًا (فريدًا) — خطوة إلزامية</span>
+            </div>
+            <p className="text-[11px] text-slate-200 leading-relaxed">
+              كل بطل في اللعبة له اسم لا يتكرر. سيُستخدم هذا الاسم لحفظ تقدمك سحابياً
+              واسترجاعه على أي جهاز، ولإضافتك كصديق أو عضو في الفرق.
+            </p>
+            <div className="flex gap-2">
+              <input
+                id="input-claim-username"
+                type="text"
+                required
+                minLength={2}
+                maxLength={20}
+                autoFocus
+                placeholder="مثال: فارس_الظلام"
+                value={claimName}
+                onChange={(e) => setClaimName(e.target.value)}
+                className="flex-1 bg-[#0f172a] border border-amber-400/40 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-300 transition"
+              />
+              <button
+                id="btn-submit-claim"
+                type="submit"
+                disabled={busy}
+                className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl transition cursor-pointer disabled:opacity-60"
+              >
+                {busy ? '...' : 'حجز الاسم ✓'}
+              </button>
+            </div>
+            {errorMsg && <div className="text-[11px] text-rose-300 font-medium">{errorMsg}</div>}
+          </form>
+        )}
 
         {/* Status Alerts */}
         {errorMsg && (
